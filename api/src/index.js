@@ -18,3 +18,10 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("API running on port", PORT);
 });
+
+app.get("/env-check", (req, res) => {
+  res.json({
+    ok: true,
+    hasDatabaseUrl: Boolean(process.env.DATABASE_URL),
+  });
+});
