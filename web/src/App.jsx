@@ -32,8 +32,8 @@ function Button({ children, ...props }) {
 export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
-  const autoConnectThreshold = hexRadius * 0.95;
-  const breakSpeedThreshold = 1.5;
+  const snapRatio = 0.82;
+  const disconnectVelocityThreshold = 600; // points/sec
   const colorOptions = [
     { name: "Red", color: "#f23f3f" },
     { name: "Orange", color: "#f29926" },
@@ -249,22 +249,6 @@ export default function App() {
     const now = event.timeStamp || Date.now();
     const deltaTime = Math.max(1, now - dragState.lastTime);
     const speed = Math.hypot(x - dragState.lastX, y - dragState.lastY) / deltaTime;
-    if (!dragState.breakConnections && speed > breakSpeedThreshold) {
-      const dragged = (boardData.hexagons || []).find((hex) => hex.id === dragState.id);
-      if (dragged) {
-        setDragState({
-          ...dragState,
-          startPositions: { [dragState.id]: { x: dragged.x || 0, y: dragged.y || 0 } },
-          startX: x,
-          startY: y,
-          lastX: x,
-          lastY: y,
-          lastTime: now,
-          breakConnections: true
-        });
-      }
-      return;
-    }
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
@@ -284,7 +268,7 @@ export default function App() {
             lastX: x,
             lastY: y,
             lastTime: now,
-            breakConnections: prev.breakConnections || speed > breakSpeedThreshold
+            lastSpeed: speed
           }
         : prev
     );
@@ -292,63 +276,24 @@ export default function App() {
 
   function handleCanvasPointerUp() {
     if (dragState) {
-      const movedIds = Object.keys(dragState.startPositions);
-      const shouldBreak = (hex, allHexes) => {
-        if (!dragState.breakConnections) return false;
-        return (hex.connections || []).some((id) => {
-          const target = allHexes.find((item) => item.id === id);
-          if (!target) return false;
-          const distance = Math.hypot((hex.x || 0) - (target.x || 0), (hex.y || 0) - (target.y || 0));
-          return distance > hexRadius;
-        });
-      };
-      const brokenIds = new Set(
-        (boardData.hexagons || [])
-          .filter((hex) => movedIds.includes(hex.id) && shouldBreak(hex, boardData.hexagons || []))
-          .map((hex) => hex.id)
-      );
-      let updatedHexes = (boardData.hexagons || []).map((hex) => {
-        if (!movedIds.includes(hex.id)) return hex;
-        let connections = hex.connections || [];
-        if (brokenIds.has(hex.id)) {
-          connections = [];
-        }
-        return { ...hex, connections };
-      });
-      if (dragState.breakConnections && brokenIds.size > 0) {
-        updatedHexes = updatedHexes.map((hex) => ({
-          ...hex,
-          connections: (hex.connections || []).filter((id) => !brokenIds.has(id))
-        }));
+      const velocity = (dragState.lastSpeed || 0) * 1000;
+      const hexSize = hexRadius * 2;
+      const snapDistance = hexSize * snapRatio;
+      const snapDistanceSquared = snapDistance * snapDistance;
+      let nextHexagons = boardData.hexagons || [];
+
+      if (velocity > disconnectVelocityThreshold) {
+        nextHexagons = clearConnectionsFor(nextHexagons, dragState.id);
+      } else {
+        const result = snapHexagonToNeighbors(
+          nextHexagons,
+          dragState.id,
+          snapDistance,
+          snapDistanceSquared
+        );
+        nextHexagons = result;
       }
-      const autoConnected = updatedHexes.map((hex) => {
-        if (!movedIds.includes(hex.id)) return hex;
-        let connections = new Set(hex.connections || []);
-        updatedHexes.forEach((other) => {
-          if (hex.id === other.id) return;
-          const distance = Math.hypot((hex.x || 0) - (other.x || 0), (hex.y || 0) - (other.y || 0));
-          if (distance <= autoConnectThreshold) {
-            connections.add(other.id);
-          }
-        });
-        return { ...hex, connections: Array.from(connections) };
-      });
-      const map = new Map(
-        autoConnected.map((hex) => [hex.id, { ...hex, connections: new Set(hex.connections || []) }])
-      );
-      map.forEach((hex) => {
-        hex.connections.forEach((id) => {
-          const target = map.get(id);
-          if (target) {
-            target.connections.add(hex.id);
-          }
-        });
-      });
-      const bidirectional = Array.from(map.values()).map((hex) => ({
-        ...hex,
-        connections: Array.from(hex.connections)
-      }));
-      pushHistory({ ...boardData, hexagons: bidirectional });
+      pushHistory({ ...boardData, hexagons: nextHexagons });
     }
     if (panState) {
       setPanState(null);
@@ -480,7 +425,7 @@ export default function App() {
       lastX: localX,
       lastY: localY,
       lastTime: event.timeStamp || Date.now(),
-      breakConnections: false
+      lastSpeed: 0
     });
   }
 
@@ -553,6 +498,59 @@ export default function App() {
       });
     });
     return lines;
+  }
+
+  function clearConnectionsFor(hexagons, id) {
+    return hexagons.map((hex) => {
+      if (hex.id === id) {
+        return { ...hex, connections: [] };
+      }
+      if (hex.connections?.includes(id)) {
+        return { ...hex, connections: (hex.connections || []).filter((conn) => conn !== id) };
+      }
+      return hex;
+    });
+  }
+
+  function snapHexagonToNeighbors(hexagons, draggedId, snapDistance, snapDistanceSquared) {
+    const draggedIndex = hexagons.findIndex((hex) => hex.id === draggedId);
+    if (draggedIndex < 0) return hexagons;
+    const dragged = hexagons[draggedIndex];
+    let closestIndex = -1;
+    let closestDistSquared = Infinity;
+    hexagons.forEach((hex, index) => {
+      if (hex.id === draggedId) return;
+      const dx = (dragged.x || 0) - (hex.x || 0);
+      const dy = (dragged.y || 0) - (hex.y || 0);
+      const distSquared = dx * dx + dy * dy;
+      if (distSquared <= snapDistanceSquared && distSquared < closestDistSquared) {
+        closestDistSquared = distSquared;
+        closestIndex = index;
+      }
+    });
+    if (closestIndex < 0) return hexagons;
+    const closest = hexagons[closestIndex];
+    const dx = (dragged.x || 0) - (closest.x || 0);
+    const dy = (dragged.y || 0) - (closest.y || 0);
+    const angle = Math.atan2(dy, dx);
+    const newX = (closest.x || 0) + Math.cos(angle) * snapDistance;
+    const newY = (closest.y || 0) + Math.sin(angle) * snapDistance;
+    const updated = [...hexagons];
+    const draggedConnections = new Set(updated[draggedIndex].connections || []);
+    const closestConnections = new Set(updated[closestIndex].connections || []);
+    draggedConnections.add(closest.id);
+    closestConnections.add(dragged.id);
+    updated[draggedIndex] = {
+      ...updated[draggedIndex],
+      x: newX,
+      y: newY,
+      connections: Array.from(draggedConnections)
+    };
+    updated[closestIndex] = {
+      ...updated[closestIndex],
+      connections: Array.from(closestConnections)
+    };
+    return updated;
   }
 
   function handleCanvasPointerDown(event) {
