@@ -1,130 +1,163 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 import { PrismaClient } from "@prisma/client";
 
 dotenv.config();
 
-const app = express();
 const prisma = new PrismaClient();
+const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
-/* -------------------- helpers -------------------- */
+const jwtSecret = process.env.JWT_SECRET;
+const inviteAllowlist = process.env.INVITE_ALLOWLIST || "";
 
-function isEmailAllowed(email) {
-  const allowlist = process.env.INVITE_ALLOWLIST;
-  if (!allowlist) return false;
-
-  const allowed = allowlist
-    .split(",")
-    .map(e => e.trim().toLowerCase());
-
-  email = email.toLowerCase();
-
-  return allowed.some(entry =>
-    entry.startsWith("@")
-      ? email.endsWith(entry)
-      : email === entry
-  );
+if (!jwtSecret) {
+  throw new Error("JWT_SECRET is required");
 }
 
-function createToken(userId) {
-  return jwt.sign(
-    { userId },
-    process.env.JWT_SECRET,
-    { expiresIn: "30d" }
-  );
+function signToken(user) {
+  return jwt.sign({ sub: user.id, email: user.email }, jwtSecret, { expiresIn: "7d" });
 }
 
-function requireAuth(req, res, next) {
-  const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
+function authMiddleware(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (!token) {
     return res.status(401).json({ error: "Missing token" });
   }
-
   try {
-    const token = header.slice(7);
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = payload.userId;
-    next();
-  } catch {
-    res.status(401).json({ error: "Invalid token" });
+    const payload = jwt.verify(token, jwtSecret);
+    req.userId = payload.sub;
+    req.userEmail = payload.email;
+    return next();
+  } catch (err) {
+    return res.status(401).json({ error: "Invalid token" });
   }
 }
 
-/* -------------------- health -------------------- */
+function isInvited(email) {
+  const allowlist = inviteAllowlist
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  return allowlist.includes(email.toLowerCase());
+}
 
-app.get("/health", (_, res) => {
+app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-/* -------------------- auth -------------------- */
-
 app.post("/auth/register", async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password)
-    return res.status(400).json({ error: "Missing fields" });
-
-  if (!isEmailAllowed(email))
+  const { email, password } = req.body ?? {};
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+  if (!isInvited(email)) {
     return res.status(403).json({ error: "Not invited" });
-
-  const existing = await prisma.user.findUnique({
-    where: { email }
-  });
-
-  if (existing)
-    return res.status(400).json({ error: "User already exists" });
-
-  const hash = await bcrypt.hash(password, 12);
-
+  }
+  const existing = await prisma.user.findUnique({ where: { email } });
+  if (existing) {
+    return res.status(409).json({ error: "User already exists" });
+  }
+  const hashed = await bcrypt.hash(password, 10);
   const user = await prisma.user.create({
-    data: { email, password: hash }
+    data: { email, password: hashed }
   });
-
-  const token = createToken(user.id);
-
-  res.json({ token });
+  const token = signToken(user);
+  return res.json({ token });
 });
 
 app.post("/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-
-  const user = await prisma.user.findUnique({
-    where: { email }
-  });
-
-  if (!user)
+  const { email, password } = req.body ?? {};
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
     return res.status(401).json({ error: "Invalid credentials" });
-
+  }
   const ok = await bcrypt.compare(password, user.password);
-  if (!ok)
+  if (!ok) {
     return res.status(401).json({ error: "Invalid credentials" });
-
-  const token = createToken(user.id);
-
-  res.json({ token });
+  }
+  const token = signToken(user);
+  return res.json({ token });
 });
 
-/* -------------------- protected -------------------- */
+app.get("/me", authMiddleware, async (req, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.userId } });
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  return res.json({ id: user.id, email: user.email, createdAt: user.createdAt });
+});
 
-app.get("/me", requireAuth, async (req, res) => {
-  const user = await prisma.user.findUnique({
-    where: { id: req.userId },
-    select: { id: true, email: true, createdAt: true }
+app.get("/boards", authMiddleware, async (req, res) => {
+  const boards = await prisma.board.findMany({
+    where: { ownerId: req.userId },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, title: true, updatedAt: true, createdAt: true }
   });
-
-  res.json(user);
+  return res.json({ boards });
 });
 
-/* -------------------- server -------------------- */
+app.post("/boards", authMiddleware, async (req, res) => {
+  const { title, data } = req.body ?? {};
+  const board = await prisma.board.create({
+    data: {
+      ownerId: req.userId,
+      title: typeof title === "string" && title.trim() ? title.trim() : "Untitled Board",
+      data: data ?? {}
+    }
+  });
+  return res.status(201).json({ board });
+});
 
-const PORT = process.env.PORT || 3000;
+app.get("/boards/:id", authMiddleware, async (req, res) => {
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  return res.json({ board });
+});
 
-app.listen(PORT, () => {
-  console.log("API running on port", PORT);
+app.put("/boards/:id", authMiddleware, async (req, res) => {
+  const { title, data } = req.body ?? {};
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  const updated = await prisma.board.update({
+    where: { id: board.id },
+    data: {
+      title: typeof title === "string" && title.trim() ? title.trim() : board.title,
+      data: data ?? board.data
+    }
+  });
+  return res.json({ board: updated });
+});
+
+app.delete("/boards/:id", authMiddleware, async (req, res) => {
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  await prisma.board.delete({ where: { id: board.id } });
+  return res.json({ ok: true });
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`API listening on ${port}`);
 });
