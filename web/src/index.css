@@ -23,6 +23,55 @@ body {
   min-height: 100vh;
 }
 
+.board-shell {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+}
+
+.board-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  z-index: 5;
+}
+
+.board-title input {
+  width: 240px;
+}
+
+.board-error {
+  font-size: 12px;
+  color: #b91c1c;
+}
+
+.board-controls {
+  position: absolute;
+  top: 72px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  z-index: 6;
+  min-width: 220px;
+}
+
+.zoom-label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: #475569;
+}
+
 .page {
   max-width: 820px;
   margin: 40px auto;
@@ -157,11 +206,10 @@ textarea {
 }
 
 .canvas {
+  flex: 1;
   width: 100%;
-  max-width: 900px;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  margin-bottom: 16px;
+  height: 100%;
+  display: block;
   background: #f8fafc;
 }
 
@@ -177,4 +225,27 @@ textarea {
   font-size: 12px;
   margin: 8px 0 0;
   white-space: pre-wrap;
+}
+
+.context-menu {
+  position: fixed;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.15);
+  z-index: 10;
+}
+
+.context-menu button {
+  text-align: left;
+}
+
+.context-menu label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  color: #475569;
 }

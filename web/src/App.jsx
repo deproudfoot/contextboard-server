@@ -49,13 +49,12 @@ export default function App() {
   const [dragState, setDragState] = useState(null);
   const [marqueeStart, setMarqueeStart] = useState(null);
   const [marqueeRect, setMarqueeRect] = useState(null);
-  const [connectMode, setConnectMode] = useState(false);
-  const [connectFromId, setConnectFromId] = useState(null);
   const [showNumbers, setShowNumbers] = useState(true);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panMode, setPanMode] = useState(false);
   const [panState, setPanState] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const historyRef = useRef([]);
@@ -90,6 +89,23 @@ export default function App() {
       .then((response) => setBoards(response.boards || []))
       .catch((e) => setErr(e.message));
   }, [user]);
+
+  useEffect(() => {
+    function handleKey(event) {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+      }
+    }
+    function handleClick() {
+      setContextMenu(null);
+    }
+    window.addEventListener("keydown", handleKey);
+    window.addEventListener("click", handleClick);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("click", handleClick);
+    };
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -145,8 +161,6 @@ export default function App() {
       const data = board.data ?? { hexagons: [] };
       setBoardData(data);
       setSelectedIds(new Set());
-      setConnectMode(false);
-      setConnectFromId(null);
       setZoom(1);
       setPan({ x: 0, y: 0 });
       historyRef.current = [];
@@ -362,32 +376,6 @@ export default function App() {
   }
 
   function handleHexPointerDown(event, hexId) {
-    if (connectMode) {
-      if (!connectFromId) {
-        setConnectFromId(hexId);
-        setSelectedIds(new Set([hexId]));
-        return;
-      }
-      if (connectFromId === hexId) {
-        setConnectFromId(null);
-        return;
-      }
-      pushHistory({
-        ...boardData,
-        hexagons: (boardData.hexagons || []).map((hex) => {
-          if (hex.id === connectFromId && !hex.connections.includes(hexId)) {
-            return { ...hex, connections: [...hex.connections, hexId] };
-          }
-          if (hex.id === hexId && !hex.connections.includes(connectFromId)) {
-            return { ...hex, connections: [...hex.connections, connectFromId] };
-          }
-          return hex;
-        })
-      });
-      setConnectFromId(null);
-      setSelectedIds(new Set([hexId]));
-      return;
-    }
     const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
     const localX = rect ? (event.clientX - rect.left - pan.x) / zoom : event.clientX;
     const localY = rect ? (event.clientY - rect.top - pan.y) / zoom : event.clientY;
@@ -435,6 +423,12 @@ export default function App() {
     });
   }
 
+  function openContextMenu(event, hexId) {
+    event.preventDefault();
+    setSelectedIds(new Set([hexId]));
+    setContextMenu({ x: event.clientX, y: event.clientY, targetId: hexId });
+  }
+
   function getHexPoints(radius) {
     const points = [];
     for (let i = 0; i < 6; i += 1) {
@@ -465,7 +459,6 @@ export default function App() {
       setPanState({ startX: event.clientX, startY: event.clientY, origin: { ...pan } });
       return;
     }
-    if (connectMode) return;
     if (event.target.tagName !== "svg" && event.target.tagName !== "rect") return;
     const rect = event.currentTarget.getBoundingClientRect();
     const start = {
@@ -546,57 +539,24 @@ export default function App() {
     const selected = (boardData.hexagons || []).find((hex) => selectedIds.has(hex.id));
     const connections = buildConnections(boardData.hexagons || []);
     return (
-      <div className="page">
-        <div className="toolbar">
-          <Button onClick={() => setActiveBoardId(null)}>Back to boards</Button>
-          <div className="spacer" />
-          <Button onClick={logout}>Log out</Button>
-        </div>
-        <h2>Board</h2>
-        <Field
-          label="Title"
-          value={boardTitle}
-          onChange={(e) => setBoardTitle(e.target.value)}
-        />
-        <div className="toolbar">
+      <div className="board-shell">
+        <div className="board-topbar">
+          <Button onClick={() => setActiveBoardId(null)}>Back</Button>
+          <div className="board-title">
+            <input value={boardTitle} onChange={(e) => setBoardTitle(e.target.value)} />
+          </div>
           <Button onClick={handleAddHexagon}>Add hexagon</Button>
-          <Button
-            onClick={() => {
-              setConnectMode((prev) => !prev);
-              setConnectFromId(null);
-            }}
-          >
-            {connectMode ? "Exit connect" : "Connect"}
-          </Button>
-          <Button onClick={() => setPanMode((prev) => !prev)}>
-            {panMode ? "Exit pan" : "Pan"}
-          </Button>
-          <Button onClick={() => setZoom((prev) => Math.max(0.4, prev - zoomStep))}>
-            Zoom -
-          </Button>
-          <Button onClick={() => setZoom((prev) => Math.min(2.5, prev + zoomStep))}>
-            Zoom +
-          </Button>
-          <Button
-            onClick={() => {
-              setZoom(1);
-              setPan({ x: 0, y: 0 });
-            }}
-          >
-            Reset view
-          </Button>
-          <Button onClick={handleDuplicateSelected} disabled={selectedIds.size === 0}>
-            Duplicate
-          </Button>
-          <Button onClick={handleDeleteSelected} disabled={selectedIds.size === 0}>
-            Delete
-          </Button>
+          <Button onClick={handleSaveBoard}>Save</Button>
           <Button onClick={undo} disabled={historyRef.current.length === 0}>
             Undo
           </Button>
           <Button onClick={redo} disabled={redoRef.current.length === 0}>
             Redo
           </Button>
+          {err ? <span className="board-error">{err}</span> : null}
+          <Button onClick={logout}>Log out</Button>
+        </div>
+        <div className="board-controls">
           <label className="toggle">
             <input
               type="checkbox"
@@ -605,39 +565,49 @@ export default function App() {
             />
             Show numbers
           </label>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={panMode}
+              onChange={(e) => setPanMode(e.target.checked)}
+            />
+            Pan
+          </label>
+          <label className="zoom-label">
+            Zoom
+            <input
+              type="range"
+              min="0.4"
+              max="2.5"
+              step="0.05"
+              value={zoom}
+              onChange={(e) => setZoom(Number(e.target.value))}
+            />
+          </label>
+          <Button
+            onClick={() => {
+              setZoom(1);
+              setPan({ x: 0, y: 0 });
+            }}
+          >
+            Reset view
+          </Button>
           {selected ? (
-            <>
-              <label className="field inline-field">
-                <div className="field-label">Label</div>
-                <input
-                  value={selected.text || ""}
-                  onChange={(e) => handleLabelChange(e.target.value)}
-                />
-              </label>
-              <label className="field inline-field">
-                <div className="field-label">Color</div>
-                <input
-                  type="color"
-                  value={selected.fillColor || "#cbd5f5"}
-                  onChange={(e) => handleColorChange(e.target.value)}
-                />
-              </label>
-              <label className="field inline-field">
-                <div className="field-label">Media</div>
-                <input
-                  type="file"
-                  onChange={(e) => handleMediaChange(e.target.files?.[0])}
-                />
-              </label>
-            </>
-          ) : (
-            <div className="muted">Select a hexagon to edit its label, color, or media.</div>
-          )}
+            <label className="field inline-field">
+              <div className="field-label">Label</div>
+              <input
+                value={selected.text || ""}
+                onChange={(e) => handleLabelChange(e.target.value)}
+              />
+            </label>
+          ) : null}
+          <label className="field inline-field">
+            <div className="field-label">Media</div>
+            <input type="file" onChange={(e) => handleMediaChange(e.target.files?.[0])} />
+          </label>
         </div>
         <svg
           className="canvas"
-          width="900"
-          height="500"
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={(event) => {
             handleCanvasPointerMove(event);
@@ -645,7 +615,7 @@ export default function App() {
           }}
           onPointerUp={handleCanvasPointerUp}
         >
-          <rect width="100%" height="100%" rx="16" fill="#f1f5f9" />
+          <rect width="100%" height="100%" fill="#f1f5f9" />
           <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
             {connections.map((line) => (
               <line
@@ -674,6 +644,8 @@ export default function App() {
                 key={hex.id}
                 transform={`translate(${hex.x || 0} ${hex.y || 0})`}
                 onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
+                onContextMenu={(event) => openContextMenu(event, hex.id)}
+                onDoubleClick={(event) => openContextMenu(event, hex.id)}
               >
                 <polygon
                   points={getHexPoints(hexRadius)}
@@ -710,12 +682,39 @@ export default function App() {
             ))}
           </g>
         </svg>
-        <details className="raw-json">
-          <summary>Raw JSON</summary>
-          <pre>{JSON.stringify(boardData, null, 2)}</pre>
-        </details>
-        {err ? <div className="error">{err}</div> : null}
-        <Button onClick={handleSaveBoard}>Save</Button>
+        {contextMenu ? (
+          <div
+            className="context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+            onMouseLeave={() => setContextMenu(null)}
+          >
+            <button
+              onClick={() => {
+                handleDuplicateSelected();
+                setContextMenu(null);
+              }}
+            >
+              Duplicate
+            </button>
+            <button
+              onClick={() => {
+                handleDeleteSelected();
+                setContextMenu(null);
+              }}
+            >
+              Delete
+            </button>
+            <label>
+              Color
+              <input
+                type="color"
+                value={selected?.fillColor || "#cbd5f5"}
+                onChange={(e) => handleColorChange(e.target.value)}
+              />
+            </label>
+          </div>
+        ) : null}
       </div>
     );
   }
