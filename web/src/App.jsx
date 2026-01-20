@@ -39,7 +39,9 @@ export default function App() {
   const [activeBoardId, setActiveBoardId] = useState(null);
   const [activeBoard, setActiveBoard] = useState(null);
   const [boardTitle, setBoardTitle] = useState("");
-  const [boardJson, setBoardJson] = useState("");
+  const [boardData, setBoardData] = useState({ hexagons: [] });
+  const [selectedId, setSelectedId] = useState(null);
+  const [dragState, setDragState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -124,7 +126,9 @@ export default function App() {
       const board = response.board;
       setActiveBoard(board);
       setBoardTitle(board.title || "");
-      setBoardJson(JSON.stringify(board.data ?? {}, null, 2));
+      const data = board.data ?? { hexagons: [] };
+      setBoardData(data);
+      setSelectedId(null);
     } catch (e) {
       setErr(e.message);
     }
@@ -134,10 +138,9 @@ export default function App() {
     if (!activeBoardId) return;
     setErr("");
     try {
-      const parsed = boardJson ? JSON.parse(boardJson) : {};
       const response = await updateBoard(activeBoardId, {
         title: boardTitle.trim() || "Untitled Board",
-        data: parsed
+        data: boardData
       });
       setActiveBoard(response.board);
       setBoards((prev) =>
@@ -148,7 +151,48 @@ export default function App() {
     }
   }
 
+  function handleCanvasPointerMove(event) {
+    if (!dragState) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: (prev.hexagons || []).map((hex) =>
+        hex.id === dragState.id ? { ...hex, x, y } : hex
+      )
+    }));
+  }
+
+  function handleCanvasPointerUp() {
+    setDragState(null);
+  }
+
+  function handleAddHexagon() {
+    const next = {
+      id: crypto.randomUUID(),
+      x: 120 + (boardData.hexagons?.length || 0) * 40,
+      y: 120 + (boardData.hexagons?.length || 0) * 30,
+      text: "New"
+    };
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: [...(prev.hexagons || []), next]
+    }));
+    setSelectedId(next.id);
+  }
+
+  function handleLabelChange(value) {
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: (prev.hexagons || []).map((hex) =>
+        hex.id === selectedId ? { ...hex, text: value } : hex
+      )
+    }));
+  }
+
   if (user && activeBoardId) {
+    const selected = (boardData.hexagons || []).find((hex) => hex.id === selectedId);
     return (
       <div className="page">
         <div className="toolbar">
@@ -162,14 +206,53 @@ export default function App() {
           value={boardTitle}
           onChange={(e) => setBoardTitle(e.target.value)}
         />
-        <label className="field">
-          <div className="field-label">Board JSON</div>
-          <textarea
-            rows={16}
-            value={boardJson}
-            onChange={(e) => setBoardJson(e.target.value)}
-          />
-        </label>
+        <div className="toolbar">
+          <Button onClick={handleAddHexagon}>Add hexagon</Button>
+          {selected ? (
+            <label className="field inline-field">
+              <div className="field-label">Label</div>
+              <input
+                value={selected.text || ""}
+                onChange={(e) => handleLabelChange(e.target.value)}
+              />
+            </label>
+          ) : (
+            <div className="muted">Select a hexagon to edit its label.</div>
+          )}
+        </div>
+        <svg
+          className="canvas"
+          width="900"
+          height="500"
+          onPointerMove={handleCanvasPointerMove}
+          onPointerUp={handleCanvasPointerUp}
+        >
+          <rect width="100%" height="100%" rx="16" fill="#f1f5f9" />
+          {(boardData.hexagons || []).map((hex) => (
+            <g
+              key={hex.id}
+              transform={`translate(${hex.x || 0} ${hex.y || 0})`}
+              onPointerDown={() => {
+                setSelectedId(hex.id);
+                setDragState({ id: hex.id });
+              }}
+            >
+              <circle r="36" fill={hex.id === selectedId ? "#94a3b8" : "#cbd5f5"} />
+              <text
+                textAnchor="middle"
+                dominantBaseline="middle"
+                fontSize="12"
+                fill="#0f172a"
+              >
+                {hex.text || "Hex"}
+              </text>
+            </g>
+          ))}
+        </svg>
+        <details className="raw-json">
+          <summary>Raw JSON</summary>
+          <pre>{JSON.stringify(boardData, null, 2)}</pre>
+        </details>
         {err ? <div className="error">{err}</div> : null}
         <Button onClick={handleSaveBoard}>Save</Button>
       </div>

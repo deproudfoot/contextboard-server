@@ -17,19 +17,20 @@ async function request(path, options = {}) {
     ...options
   });
 
-  if (!response.ok) {
-    let message = response.statusText;
+  const text = await response.text();
+  let data = {};
+  if (text) {
     try {
-      const data = await response.json();
-      message = data.error || message;
+      data = JSON.parse(text);
     } catch {
-      const text = await response.text();
-      message = text || message;
+      data = {};
     }
+  }
+  if (!response.ok) {
+    const message = data.error || text || response.statusText;
     throw new Error(message);
   }
-
-  return response.json();
+  return data;
 }
 
 const TOKEN_KEY = "contextboard_token";

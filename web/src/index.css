@@ -48,6 +48,10 @@ body {
   margin-bottom: 6px;
 }
 
+.inline-field {
+  max-width: 240px;
+}
+
 input,
 textarea {
   width: 100%;
@@ -133,4 +137,26 @@ textarea {
 .small {
   font-size: 12px;
   margin-top: 16px;
+}
+
+.canvas {
+  width: 100%;
+  max-width: 900px;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  margin-bottom: 16px;
+}
+
+.raw-json {
+  margin-bottom: 16px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.raw-json pre {
+  font-size: 12px;
+  margin: 8px 0 0;
+  white-space: pre-wrap;
 }
