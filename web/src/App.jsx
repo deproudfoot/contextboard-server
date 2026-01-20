@@ -35,6 +35,13 @@ export default function App() {
   const zoomStep = 0.1;
   const autoConnectThreshold = hexRadius * 0.95;
   const breakSpeedThreshold = 1.5;
+  const colorOptions = [
+    { name: "Red", color: "#f23f3f" },
+    { name: "Orange", color: "#f29926" },
+    { name: "Yellow", color: "#f2d933" },
+    { name: "Green", color: "#40d940" },
+    { name: "Blue", color: "#4099f2" }
+  ];
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -61,6 +68,10 @@ export default function App() {
   const historyRef = useRef([]);
   const redoRef = useRef([]);
   const canvasRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const videoInputRef = useRef(null);
+  const audioInputRef = useRef(null);
+  const pendingMediaRef = useRef({ id: null, type: null });
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -108,6 +119,14 @@ export default function App() {
       window.removeEventListener("click", handleClick);
     };
   }, []);
+
+  useEffect(() => {
+    if (!activeBoardId) return;
+    const svg = canvasRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    setPan({ x: rect.width / 2, y: rect.height / 2 });
+  }, [activeBoardId]);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -367,13 +386,17 @@ export default function App() {
     });
   }
 
-  function handleMediaChange(file) {
-    if (!file || selectedIds.size === 0) return;
+  function handleMediaChange(file, forcedType) {
+    if (!file) return;
+    const targetId = pendingMediaRef.current.id || Array.from(selectedIds)[0];
+    if (!targetId) return;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
       if (!dataUrl || typeof dataUrl !== "string") return;
-      const type = file.type.startsWith("image/")
+      const type = forcedType
+        ? forcedType
+        : file.type.startsWith("image/")
         ? "image"
         : file.type.startsWith("video/")
         ? "video"
@@ -386,9 +409,10 @@ export default function App() {
       pushHistory({
         ...boardData,
         hexagons: (boardData.hexagons || []).map((hex) =>
-          selectedIds.has(hex.id) ? { ...hex, content: payload } : hex
+          hex.id === targetId ? { ...hex, content: payload } : hex
         )
       });
+      pendingMediaRef.current = { id: null, type: null };
     };
     reader.readAsDataURL(file);
   }
@@ -449,6 +473,46 @@ export default function App() {
     event.preventDefault();
     setSelectedIds(new Set([hexId]));
     setContextMenu({ x: event.clientX, y: event.clientY, targetId: hexId });
+  }
+
+  function setHexContent(id, content) {
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || []).map((hex) =>
+        hex.id === id ? { ...hex, content } : hex
+      )
+    });
+  }
+
+  function handleEditText(id, asHypertext) {
+    const hex = (boardData.hexagons || []).find((item) => item.id === id);
+    const current =
+      hex?.content?.type === "text" || hex?.content?.type === "hypertext"
+        ? hex.content.value || ""
+        : hex?.text || "";
+    const label = asHypertext ? "Edit hypertext" : "Edit text";
+    const next = window.prompt(label, current);
+    if (next === null) return;
+    if (asHypertext) {
+      setHexContent(id, { type: "hypertext", value: next });
+    } else {
+      setHexContent(id, { type: "text", value: next });
+    }
+  }
+
+  function handleSetText(id) {
+    setHexContent(id, { type: "text", value: "New Text" });
+  }
+
+  function handleSetHypertext(id) {
+    setHexContent(id, { type: "hypertext", value: "Visit https://openai.com" });
+  }
+
+  function triggerMediaPicker(id, type) {
+    pendingMediaRef.current = { id, type };
+    if (type === "image") imageInputRef.current?.click();
+    if (type === "video") videoInputRef.current?.click();
+    if (type === "audio") audioInputRef.current?.click();
   }
 
   function getHexPoints(radius) {
@@ -594,7 +658,7 @@ export default function App() {
           <div className="board-title">
             <input value={boardTitle} onChange={(e) => setBoardTitle(e.target.value)} />
           </div>
-          <Button onClick={handleAddHexagon}>Add hexagon</Button>
+          <div className="spacer" />
           <Button onClick={handleSaveBoard}>Save</Button>
           <Button onClick={undo} disabled={historyRef.current.length === 0}>
             Undo
@@ -641,19 +705,6 @@ export default function App() {
           >
             Reset view
           </Button>
-          {selected ? (
-            <label className="field inline-field">
-              <div className="field-label">Label</div>
-              <input
-                value={selected.text || ""}
-                onChange={(e) => handleLabelChange(e.target.value)}
-              />
-            </label>
-          ) : null}
-          <label className="field inline-field">
-            <div className="field-label">Media</div>
-            <input type="file" onChange={(e) => handleMediaChange(e.target.files?.[0])} />
-          </label>
         </div>
         <svg
           ref={canvasRef}
@@ -760,6 +811,18 @@ export default function App() {
                         />
                       </foreignObject>
                     ) : null}
+                    {hex.content.type === "text" || hex.content.type === "hypertext" ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <div className="hex-text-content">
+                          {hex.content.value || ""}
+                        </div>
+                      </foreignObject>
+                    ) : null}
                   </g>
                 ) : null}
                 {showNumbers && hex.number ? (
@@ -773,7 +836,9 @@ export default function App() {
                   fontSize="12"
                   fill="#0f172a"
                 >
-                  {hex.content?.type && hex.content?.type !== "image"
+                  {hex.content?.type === "text" || hex.content?.type === "hypertext"
+                    ? ""
+                    : hex.content?.type && hex.content?.type !== "image"
                     ? hex.content.type.toUpperCase()
                     : hex.text || "Hex"}
                 </text>
@@ -781,6 +846,9 @@ export default function App() {
             )})}
           </g>
         </svg>
+        <button className="fab" onClick={handleAddHexagon} aria-label="Add hexagon">
+          +
+        </button>
         {contextMenu ? (
           <div
             className="context-menu"
@@ -788,6 +856,41 @@ export default function App() {
             onClick={(event) => event.stopPropagation()}
             onMouseLeave={() => setContextMenu(null)}
           >
+            <button onClick={() => setSelectedIds((prev) => {
+              const next = new Set(prev);
+              next.delete(contextMenu.targetId);
+              return next;
+            })}>
+              Deselect
+            </button>
+            <button onClick={() => setSelectedIds(new Set())}>Deselect All</button>
+            <button onClick={() => handleEditText(contextMenu.targetId, false)}>Edit Text</button>
+            <button onClick={() => handleSetText(contextMenu.targetId)}>Set Text</button>
+            <button onClick={() => handleEditText(contextMenu.targetId, true)}>Set Hypertext</button>
+            <button onClick={() => handleSetHypertext(contextMenu.targetId)}>Set Hypertext</button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "image")}>
+              Set Image
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "video")}>
+              Set Video
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "audio")}>
+              Set Audio
+            </button>
+            <div className="menu-section">
+              Change Color
+              <div className="color-row">
+                {colorOptions.map((option) => (
+                  <button
+                    key={option.name}
+                    className="color-dot"
+                    style={{ background: option.color }}
+                    onClick={() => handleColorChange(option.color)}
+                    aria-label={option.name}
+                  />
+                ))}
+              </div>
+            </div>
             <button
               onClick={() => {
                 handleDuplicateSelected();
@@ -814,6 +917,27 @@ export default function App() {
             </label>
           </div>
         ) : null}
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          style={{ display: "none" }}
+          onChange={(e) => handleMediaChange(e.target.files?.[0], "image")}
+        />
+        <input
+          ref={videoInputRef}
+          type="file"
+          accept="video/*"
+          style={{ display: "none" }}
+          onChange={(e) => handleMediaChange(e.target.files?.[0], "video")}
+        />
+        <input
+          ref={audioInputRef}
+          type="file"
+          accept="audio/*"
+          style={{ display: "none" }}
+          onChange={(e) => handleMediaChange(e.target.files?.[0], "audio")}
+        />
       </div>
     );
   }
