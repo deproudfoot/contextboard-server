@@ -32,8 +32,8 @@ function Button({ children, ...props }) {
 export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
-  const snapRatio = 0.82;
-  const disconnectVelocityThreshold = 600; // points/sec
+  const [snapRatio, setSnapRatio] = useState(0.82);
+  const [disconnectVelocityThreshold, setDisconnectVelocityThreshold] = useState(600);
   const colorOptions = [
     { name: "Red", color: "#f23f3f" },
     { name: "Orange", color: "#f29926" },
@@ -709,8 +709,33 @@ export default function App() {
               />
               Show numbers
             </label>
+            <label className="field inline-field">
+              <div className="field-label">Snap ratio</div>
+              <input
+                type="number"
+                min="0.2"
+                max="1.2"
+                step="0.01"
+                value={snapRatio}
+                onChange={(e) => setSnapRatio(Number(e.target.value))}
+              />
+            </label>
+            <label className="field inline-field">
+              <div className="field-label">Break speed (px/s)</div>
+              <input
+                type="number"
+                min="100"
+                max="2000"
+                step="50"
+                value={disconnectVelocityThreshold}
+                onChange={(e) => setDisconnectVelocityThreshold(Number(e.target.value))}
+              />
+            </label>
           </div>
         ) : null}
+        <div className="snap-indicator">
+          Snap {(snapRatio * 100).toFixed(0)}% · Break {disconnectVelocityThreshold} px/s
+        </div>
         <svg
           ref={canvasRef}
           className="canvas"
