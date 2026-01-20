@@ -107,6 +107,25 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
+    if (!user?.id) return;
+    const stored = localStorage.getItem(`contextboard_breakSpeed_${user.id}`);
+    if (stored !== null) {
+      const value = Number(stored);
+      if (!Number.isNaN(value)) {
+        setDisconnectVelocityThreshold(value);
+      }
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    localStorage.setItem(
+      `contextboard_breakSpeed_${user.id}`,
+      String(disconnectVelocityThreshold)
+    );
+  }, [disconnectVelocityThreshold, user?.id]);
+
+  useEffect(() => {
     function handleKey(event) {
       if (event.key === "Escape") {
         setContextMenu(null);
@@ -468,7 +487,10 @@ export default function App() {
     }
   }
 
-  function handleHexDoubleClick(hex) {
+  function handleHexDoubleClick(event, hex) {
+    if (!event.target?.classList?.contains("hex-text-label")) {
+      return;
+    }
     if (hex.content?.type === "video" || hex.content?.type === "audio") {
       const media = document.getElementById(`media-${hex.id}`);
       if (media && media.paused) {
@@ -824,7 +846,7 @@ export default function App() {
                 transform={`translate(${hex.x || 0} ${hex.y || 0})`}
                 onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
                 onContextMenu={(event) => openContextMenu(event, hex.id)}
-                onDoubleClick={() => handleHexDoubleClick(hex)}
+                onDoubleClick={(event) => handleHexDoubleClick(event, hex)}
               >
                 <defs>
                   <clipPath id={clipId}>
@@ -913,6 +935,7 @@ export default function App() {
                   </text>
                 ) : null}
                 <text
+                  className="hex-text-label"
                   textAnchor="middle"
                   dominantBaseline="middle"
                   fontSize="12"
