@@ -33,7 +33,7 @@ export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
   const [snapRatio, setSnapRatio] = useState(0.82);
-  const [disconnectVelocityThreshold, setDisconnectVelocityThreshold] = useState(600);
+  const [disconnectVelocityThreshold, setDisconnectVelocityThreshold] = useState(60);
   const colorOptions = [
     { name: "Red", color: "#f23f3f" },
     { name: "Orange", color: "#f29926" },
@@ -245,8 +245,8 @@ export default function App() {
     const rect = event.currentTarget.getBoundingClientRect();
     const rawX = (event.clientX - rect.left - pan.x) / zoom;
     const rawY = (event.clientY - rect.top - pan.y) / zoom;
-    const x = Math.round(rawX / snapSize) * snapSize;
-    const y = Math.round(rawY / snapSize) * snapSize;
+    const x = rawX;
+    const y = rawY;
     const dx = x - dragState.startX;
     const dy = y - dragState.startY;
     const now = event.timeStamp || Date.now();
@@ -466,6 +466,19 @@ export default function App() {
     } else {
       setHexContent(id, { type: "text", value: next });
     }
+  }
+
+  function handleHexDoubleClick(hex) {
+    if (hex.content?.type === "video" || hex.content?.type === "audio") {
+      const media = document.getElementById(`media-${hex.id}`);
+      if (media && media.paused) {
+        media.play();
+      } else if (media) {
+        media.pause();
+      }
+      return;
+    }
+    handleEditText(hex.id, hex.content?.type === "hypertext");
   }
 
   function handleSetText(id) {
@@ -689,7 +702,11 @@ export default function App() {
         <div className="board-topbar">
           <Button onClick={() => setActiveBoardId(null)}>Back</Button>
           <div className="board-title">
-            <input value={boardTitle} onChange={(e) => setBoardTitle(e.target.value)} />
+            <input
+              className="title-input"
+              value={boardTitle}
+              onChange={(e) => setBoardTitle(e.target.value)}
+            />
           </div>
           <div className="spacer" />
           <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
@@ -753,9 +770,9 @@ export default function App() {
               <div className="field-label">Break speed (px/s)</div>
               <input
                 type="number"
-                min="100"
-                max="2000"
-                step="50"
+                min="0"
+                max="100"
+                step="1"
                 value={disconnectVelocityThreshold}
                 onChange={(e) => setDisconnectVelocityThreshold(Number(e.target.value))}
               />
@@ -807,7 +824,7 @@ export default function App() {
                 transform={`translate(${hex.x || 0} ${hex.y || 0})`}
                 onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
                 onContextMenu={(event) => openContextMenu(event, hex.id)}
-                onDoubleClick={(event) => openContextMenu(event, hex.id)}
+                onDoubleClick={() => handleHexDoubleClick(hex)}
               >
                 <defs>
                   <clipPath id={clipId}>
@@ -840,6 +857,7 @@ export default function App() {
                         height={hexRadius * 2}
                       >
                         <video
+                          id={`media-${hex.id}`}
                           src={hex.content.dataUrl}
                           controls
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
@@ -853,7 +871,12 @@ export default function App() {
                         width={hexRadius * 2}
                         height={hexRadius * 2}
                       >
-                        <audio src={hex.content.dataUrl} controls style={{ width: "100%" }} />
+                        <audio
+                          id={`media-${hex.id}`}
+                          src={hex.content.dataUrl}
+                          controls
+                          style={{ width: "100%" }}
+                        />
                       </foreignObject>
                     ) : null}
                     {hex.content.type === "pdf" ? (
