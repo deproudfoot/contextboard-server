@@ -8,7 +8,8 @@ import {
   listBoards,
   createBoard,
   getBoard,
-  updateBoard
+  updateBoard,
+  deleteBoard
 } from "./api";
 
 function Field({ label, ...props }) {
@@ -50,7 +51,7 @@ export default function App() {
   const [marqueeStart, setMarqueeStart] = useState(null);
   const [marqueeRect, setMarqueeRect] = useState(null);
   const [showNumbers, setShowNumbers] = useState(true);
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.5);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panMode, setPanMode] = useState(false);
   const [panState, setPanState] = useState(null);
@@ -59,6 +60,7 @@ export default function App() {
   const [err, setErr] = useState("");
   const historyRef = useRef([]);
   const redoRef = useRef([]);
+  const canvasRef = useRef(null);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -161,7 +163,7 @@ export default function App() {
       const data = board.data ?? { hexagons: [] };
       setBoardData(data);
       setSelectedIds(new Set());
-      setZoom(1);
+      setZoom(0.5);
       setPan({ x: 0, y: 0 });
       historyRef.current = [];
       redoRef.current = [];
@@ -219,6 +221,22 @@ export default function App() {
     const now = event.timeStamp || Date.now();
     const deltaTime = Math.max(1, now - dragState.lastTime);
     const speed = Math.hypot(x - dragState.lastX, y - dragState.lastY) / deltaTime;
+    if (!dragState.breakConnections && speed > breakSpeedThreshold) {
+      const dragged = (boardData.hexagons || []).find((hex) => hex.id === dragState.id);
+      if (dragged) {
+        setDragState({
+          ...dragState,
+          startPositions: { [dragState.id]: { x: dragged.x || 0, y: dragged.y || 0 } },
+          startX: x,
+          startY: y,
+          lastX: x,
+          lastY: y,
+          lastTime: now,
+          breakConnections: true
+        });
+      }
+      return;
+    }
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
@@ -390,6 +408,11 @@ export default function App() {
         }
         return next;
       }
+      return new Set([hexId]);
+    })();
+    setSelectedIds(currentSelection);
+    const dragIds = (() => {
+      if (currentSelection.size > 1) return currentSelection;
       const connected = new Set([hexId]);
       const queue = [hexId];
       while (queue.length) {
@@ -404,10 +427,9 @@ export default function App() {
       }
       return connected;
     })();
-    setSelectedIds(currentSelection);
     const startPositions = {};
     (boardData.hexagons || []).forEach((hex) => {
-      if (currentSelection.has(hex.id)) {
+      if (dragIds.has(hex.id)) {
         startPositions[hex.id] = { x: hex.x || 0, y: hex.y || 0 };
       }
     });
@@ -518,6 +540,23 @@ export default function App() {
     setSelectedIds(new Set());
   }
 
+  function setZoomWithCenter(nextZoom) {
+    const svg = canvasRef.current;
+    if (!svg) {
+      setZoom(nextZoom);
+      return;
+    }
+    const rect = svg.getBoundingClientRect();
+    const center = { x: rect.width / 2, y: rect.height / 2 };
+    const worldX = (center.x - pan.x) / zoom;
+    const worldY = (center.y - pan.y) / zoom;
+    setZoom(nextZoom);
+    setPan({
+      x: center.x - worldX * nextZoom,
+      y: center.y - worldY * nextZoom
+    });
+  }
+
   function handleDuplicateSelected() {
     if (selectedIds.size === 0) return;
     const selected = (boardData.hexagons || []).filter((hex) => selectedIds.has(hex.id));
@@ -533,6 +572,16 @@ export default function App() {
       hexagons: [...(boardData.hexagons || []), ...clones]
     });
     setSelectedIds(new Set(clones.map((hex) => hex.id)));
+  }
+
+  async function handleDeleteBoard(id) {
+    setErr("");
+    try {
+      await deleteBoard(id);
+      setBoards((prev) => prev.filter((board) => board.id !== id));
+    } catch (e) {
+      setErr(e.message);
+    }
   }
 
   if (user && activeBoardId) {
@@ -577,16 +626,16 @@ export default function App() {
             Zoom
             <input
               type="range"
-              min="0.4"
-              max="2.5"
+              min="0.2"
+              max="5"
               step="0.05"
               value={zoom}
-              onChange={(e) => setZoom(Number(e.target.value))}
+              onChange={(e) => setZoomWithCenter(Number(e.target.value))}
             />
           </label>
           <Button
             onClick={() => {
-              setZoom(1);
+              setZoom(0.5);
               setPan({ x: 0, y: 0 });
             }}
           >
@@ -607,6 +656,7 @@ export default function App() {
           </label>
         </div>
         <svg
+          ref={canvasRef}
           className="canvas"
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={(event) => {
@@ -639,7 +689,9 @@ export default function App() {
                 strokeWidth="1"
               />
             ) : null}
-            {(boardData.hexagons || []).map((hex) => (
+            {(boardData.hexagons || []).map((hex) => {
+              const clipId = `clip-${hex.id}`;
+              return (
               <g
                 key={hex.id}
                 transform={`translate(${hex.x || 0} ${hex.y || 0})`}
@@ -647,21 +699,68 @@ export default function App() {
                 onContextMenu={(event) => openContextMenu(event, hex.id)}
                 onDoubleClick={(event) => openContextMenu(event, hex.id)}
               >
+                <defs>
+                  <clipPath id={clipId}>
+                    <polygon points={getHexPoints(hexRadius)} />
+                  </clipPath>
+                </defs>
                 <polygon
                   points={getHexPoints(hexRadius)}
                   fill={hex.fillColor || "#cbd5f5"}
                   stroke={selectedIds.has(hex.id) ? "#0f172a" : "#94a3b8"}
                   strokeWidth={selectedIds.has(hex.id) ? 2 : 1}
                 />
-                {hex.content?.type === "image" ? (
-                  <image
-                    href={hex.content.dataUrl}
-                    x={-24}
-                    y={-24}
-                    width="48"
-                    height="48"
-                    preserveAspectRatio="xMidYMid slice"
-                  />
+                {hex.content?.type ? (
+                  <g clipPath={`url(#${clipId})`}>
+                    {hex.content.type === "image" ? (
+                      <image
+                        href={hex.content.dataUrl}
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                        preserveAspectRatio="xMidYMid slice"
+                      />
+                    ) : null}
+                    {hex.content.type === "video" ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <video
+                          src={hex.content.dataUrl}
+                          controls
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      </foreignObject>
+                    ) : null}
+                    {hex.content.type === "audio" ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <audio src={hex.content.dataUrl} controls style={{ width: "100%" }} />
+                      </foreignObject>
+                    ) : null}
+                    {hex.content.type === "pdf" ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <iframe
+                          title={hex.content.name || "PDF"}
+                          src={hex.content.dataUrl}
+                          style={{ width: "100%", height: "100%", border: "none" }}
+                        />
+                      </foreignObject>
+                    ) : null}
+                  </g>
                 ) : null}
                 {showNumbers && hex.number ? (
                   <text x={-hexRadius + 6} y={-hexRadius + 12} fontSize="10" fill="#0f172a">
@@ -679,7 +778,7 @@ export default function App() {
                     : hex.text || "Hex"}
                 </text>
               </g>
-            ))}
+            )})}
           </g>
         </svg>
         {contextMenu ? (
@@ -737,12 +836,17 @@ export default function App() {
         {err ? <div className="error">{err}</div> : null}
         <div className="list">
           {boards.map((board) => (
-            <button key={board.id} className="list-item" onClick={() => openBoard(board.id)}>
-              <div className="list-title">{board.title}</div>
-              <div className="muted">
-                Updated {board.updatedAt ? new Date(board.updatedAt).toLocaleString() : "—"}
-              </div>
-            </button>
+            <div key={board.id} className="list-item row">
+              <button className="list-action" onClick={() => openBoard(board.id)}>
+                <div className="list-title">{board.title}</div>
+                <div className="muted">
+                  Updated {board.updatedAt ? new Date(board.updatedAt).toLocaleString() : "—"}
+                </div>
+              </button>
+              <button className="button" onClick={() => handleDeleteBoard(board.id)}>
+                Delete
+              </button>
+            </div>
           ))}
         </div>
       </div>

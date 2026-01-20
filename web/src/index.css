@@ -168,6 +168,23 @@ textarea {
   cursor: pointer;
 }
 
+.list-item.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: default;
+}
+
+.list-action {
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  flex: 1;
+}
+
 .list-title {
   font-weight: 600;
   margin-bottom: 6px;
