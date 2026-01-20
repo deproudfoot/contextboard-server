@@ -61,6 +61,9 @@ export default function App() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panState, setPanState] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [addCount, setAddCount] = useState(1);
+  const [addColor, setAddColor] = useState(colorOptions[0].color);
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -303,28 +306,33 @@ export default function App() {
     setMarqueeRect(null);
   }
 
-  function handleAddHexagon() {
+  function handleAddHexagon(count = addCount, color = addColor) {
     const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
     const svg = canvasRef.current;
     const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
     const center = { x: rect.width / 2, y: rect.height / 2 };
     const worldX = (center.x - pan.x) / zoom;
     const worldY = (center.y - pan.y) / zoom;
-    const next = {
-      id: crypto.randomUUID(),
-      number: maxNumber + 1,
-      x: Math.round(worldX / snapSize) * snapSize,
-      y: Math.round(worldY / snapSize) * snapSize,
-      text: "New",
-      fillColor: "#cbd5f5",
-      connections: [],
-      content: null
-    };
-    pushHistory({
-      ...boardData,
-      hexagons: [...(boardData.hexagons || []), next]
-    });
-    setSelectedIds(new Set([next.id]));
+    const hexagons = [...(boardData.hexagons || [])];
+    const cols = Math.ceil(Math.sqrt(count));
+    const spacing = hexRadius * 2.2;
+    for (let i = 0; i < count; i += 1) {
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      hexagons.push({
+        id: crypto.randomUUID(),
+        number: maxNumber + 1 + i,
+        x: Math.round((worldX + col * spacing) / snapSize) * snapSize,
+        y: Math.round((worldY + row * spacing) / snapSize) * snapSize,
+        text: "New",
+        fillColor: color,
+        connections: [],
+        content: null
+      });
+    }
+    pushHistory({ ...boardData, hexagons });
+    setSelectedIds(new Set(hexagons.slice(-count).map((hex) => hex.id)));
+    setShowAddMenu(false);
   }
 
   function handleLabelChange(value) {
@@ -617,6 +625,15 @@ export default function App() {
     setSelectedIds(new Set());
   }
 
+  function handleDisconnectSelected() {
+    if (selectedIds.size === 0) return;
+    let next = boardData.hexagons || [];
+    selectedIds.forEach((id) => {
+      next = clearConnectionsFor(next, id);
+    });
+    pushHistory({ ...boardData, hexagons: next });
+  }
+
   function setZoomWithCenter(nextZoom) {
     const svg = canvasRef.current;
     if (!svg) {
@@ -675,13 +692,25 @@ export default function App() {
             <input value={boardTitle} onChange={(e) => setBoardTitle(e.target.value)} />
           </div>
           <div className="spacer" />
-          <Button onClick={handleSaveBoard}>Save</Button>
-          <Button onClick={undo} disabled={historyRef.current.length === 0}>
-            Undo
-          </Button>
-          <Button onClick={redo} disabled={redoRef.current.length === 0}>
-            Redo
-          </Button>
+          <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
+            💾
+          </button>
+          <button
+            className="icon-button"
+            onClick={undo}
+            disabled={historyRef.current.length === 0}
+            aria-label="Undo"
+          >
+            ↺
+          </button>
+          <button
+            className="icon-button"
+            onClick={redo}
+            disabled={redoRef.current.length === 0}
+            aria-label="Redo"
+          >
+            ↻
+          </button>
           {err ? <span className="board-error">{err}</span> : null}
           <button className="icon-button" onClick={() => setShowSettings((prev) => !prev)}>
             ⚙️
@@ -876,9 +905,37 @@ export default function App() {
             )})}
           </g>
         </svg>
-        <button className="fab" onClick={handleAddHexagon} aria-label="Add hexagon">
+        <button className="fab" onClick={() => setShowAddMenu((prev) => !prev)} aria-label="Add hexagon">
           +
         </button>
+        {showAddMenu ? (
+          <div className="add-menu">
+            <div className="menu-section">Pick a color</div>
+            <div className="color-row">
+              {colorOptions.map((option) => (
+                <button
+                  key={option.name}
+                  className={`color-dot ${addColor === option.color ? "active" : ""}`}
+                  style={{ background: option.color }}
+                  onClick={() => setAddColor(option.color)}
+                  aria-label={option.name}
+                />
+              ))}
+            </div>
+            <label className="field inline-field">
+              <div className="field-label">How many</div>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                step="1"
+                value={addCount}
+                onChange={(e) => setAddCount(Math.max(1, Number(e.target.value)))}
+              />
+            </label>
+            <Button onClick={() => handleAddHexagon(addCount, addColor)}>Add</Button>
+          </div>
+        ) : null}
         {contextMenu ? (
           <div
             className="context-menu"
@@ -897,7 +954,6 @@ export default function App() {
             <button onClick={() => handleEditText(contextMenu.targetId, false)}>Edit Text</button>
             <button onClick={() => handleSetText(contextMenu.targetId)}>Set Text</button>
             <button onClick={() => handleEditText(contextMenu.targetId, true)}>Set Hypertext</button>
-            <button onClick={() => handleSetHypertext(contextMenu.targetId)}>Set Hypertext</button>
             <button onClick={() => triggerMediaPicker(contextMenu.targetId, "image")}>
               Set Image
             </button>
@@ -921,6 +977,7 @@ export default function App() {
                 ))}
               </div>
             </div>
+            <button onClick={() => handleDisconnectSelected()}>Disconnect</button>
             <button
               onClick={() => {
                 handleDuplicateSelected();
@@ -937,14 +994,6 @@ export default function App() {
             >
               Delete
             </button>
-            <label>
-              Color
-              <input
-                type="color"
-                value={selected?.fillColor || "#cbd5f5"}
-                onChange={(e) => handleColorChange(e.target.value)}
-              />
-            </label>
           </div>
         ) : null}
         <input
