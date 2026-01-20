@@ -42,10 +42,13 @@ export default function App() {
   const [activeBoard, setActiveBoard] = useState(null);
   const [boardTitle, setBoardTitle] = useState("");
   const [boardData, setBoardData] = useState({ hexagons: [] });
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
   const [dragState, setDragState] = useState(null);
+  const [marqueeStart, setMarqueeStart] = useState(null);
+  const [marqueeRect, setMarqueeRect] = useState(null);
   const [connectMode, setConnectMode] = useState(false);
   const [connectFromId, setConnectFromId] = useState(null);
+  const [showNumbers, setShowNumbers] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -132,7 +135,7 @@ export default function App() {
       setBoardTitle(board.title || "");
       const data = board.data ?? { hexagons: [] };
       setBoardData(data);
-      setSelectedId(null);
+      setSelectedIds(new Set());
       setConnectMode(false);
       setConnectFromId(null);
     } catch (e) {
@@ -164,21 +167,33 @@ export default function App() {
     const rawY = event.clientY - rect.top;
     const x = Math.round(rawX / snapSize) * snapSize;
     const y = Math.round(rawY / snapSize) * snapSize;
+    const dx = x - dragState.startX;
+    const dy = y - dragState.startY;
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
-        hex.id === dragState.id ? { ...hex, x, y } : hex
+        dragState.startPositions[hex.id]
+          ? {
+              ...hex,
+              x: dragState.startPositions[hex.id].x + dx,
+              y: dragState.startPositions[hex.id].y + dy
+            }
+          : hex
       )
     }));
   }
 
   function handleCanvasPointerUp() {
     setDragState(null);
+    setMarqueeStart(null);
+    setMarqueeRect(null);
   }
 
   function handleAddHexagon() {
+    const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
     const next = {
       id: crypto.randomUUID(),
+      number: maxNumber + 1,
       x: 120 + (boardData.hexagons?.length || 0) * 40,
       y: 120 + (boardData.hexagons?.length || 0) * 30,
       text: "New",
@@ -190,14 +205,14 @@ export default function App() {
       ...prev,
       hexagons: [...(prev.hexagons || []), next]
     }));
-    setSelectedId(next.id);
+    setSelectedIds(new Set([next.id]));
   }
 
   function handleLabelChange(value) {
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
-        hex.id === selectedId ? { ...hex, text: value } : hex
+        selectedIds.has(hex.id) ? { ...hex, text: value } : hex
       )
     }));
   }
@@ -206,13 +221,13 @@ export default function App() {
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
-        hex.id === selectedId ? { ...hex, fillColor: value } : hex
+        selectedIds.has(hex.id) ? { ...hex, fillColor: value } : hex
       )
     }));
   }
 
   function handleMediaChange(file) {
-    if (!file || !selectedId) return;
+    if (!file || selectedIds.size === 0) return;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;
@@ -230,18 +245,18 @@ export default function App() {
       setBoardData((prev) => ({
         ...prev,
         hexagons: (prev.hexagons || []).map((hex) =>
-          hex.id === selectedId ? { ...hex, content: payload } : hex
+          selectedIds.has(hex.id) ? { ...hex, content: payload } : hex
         )
       }));
     };
     reader.readAsDataURL(file);
   }
 
-  function handleHexPointerDown(hexId) {
+  function handleHexPointerDown(event, hexId) {
     if (connectMode) {
       if (!connectFromId) {
         setConnectFromId(hexId);
-        setSelectedId(hexId);
+        setSelectedIds(new Set([hexId]));
         return;
       }
       if (connectFromId === hexId) {
@@ -261,11 +276,38 @@ export default function App() {
         })
       }));
       setConnectFromId(null);
-      setSelectedId(hexId);
+      setSelectedIds(new Set([hexId]));
       return;
     }
-    setSelectedId(hexId);
-    setDragState({ id: hexId });
+    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+    const localX = rect ? event.clientX - rect.left : event.clientX;
+    const localY = rect ? event.clientY - rect.top : event.clientY;
+    const isToggle = event.shiftKey;
+    const currentSelection = (() => {
+      const next = new Set(selectedIds);
+      if (isToggle) {
+        if (next.has(hexId)) {
+          next.delete(hexId);
+        } else {
+          next.add(hexId);
+        }
+        return next;
+      }
+      return new Set([hexId]);
+    })();
+    setSelectedIds(currentSelection);
+    const startPositions = {};
+    (boardData.hexagons || []).forEach((hex) => {
+      if (currentSelection.has(hex.id)) {
+        startPositions[hex.id] = { x: hex.x || 0, y: hex.y || 0 };
+      }
+    });
+    setDragState({
+      id: hexId,
+      startX: localX,
+      startY: localY,
+      startPositions
+    });
   }
 
   function getHexPoints(radius) {
@@ -293,8 +335,76 @@ export default function App() {
     return lines;
   }
 
+  function handleCanvasPointerDown(event) {
+    if (connectMode) return;
+    if (event.target.tagName !== "svg" && event.target.tagName !== "rect") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const start = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    setMarqueeStart(start);
+    setMarqueeRect({ x: start.x, y: start.y, width: 0, height: 0 });
+    setSelectedIds(new Set());
+  }
+
+  function handleCanvasPointerMoveMarquee(event) {
+    if (!marqueeStart) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const nextRect = {
+      x: Math.min(marqueeStart.x, x),
+      y: Math.min(marqueeStart.y, y),
+      width: Math.abs(x - marqueeStart.x),
+      height: Math.abs(y - marqueeStart.y)
+    };
+    setMarqueeRect(nextRect);
+    const ids = (boardData.hexagons || [])
+      .filter((hex) => {
+        const hx = hex.x || 0;
+        const hy = hex.y || 0;
+        return (
+          hx >= nextRect.x &&
+          hx <= nextRect.x + nextRect.width &&
+          hy >= nextRect.y &&
+          hy <= nextRect.y + nextRect.height
+        );
+      })
+      .map((hex) => hex.id);
+    setSelectedIds(new Set(ids));
+  }
+
+  function handleDeleteSelected() {
+    if (selectedIds.size === 0) return;
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: (prev.hexagons || [])
+        .filter((hex) => !selectedIds.has(hex.id))
+        .map((hex) => ({
+          ...hex,
+          connections: (hex.connections || []).filter((id) => !selectedIds.has(id))
+        }))
+    }));
+    setSelectedIds(new Set());
+  }
+
+  function handleDuplicateSelected() {
+    if (selectedIds.size === 0) return;
+    const selected = (boardData.hexagons || []).filter((hex) => selectedIds.has(hex.id));
+    const clones = selected.map((hex) => ({
+      ...hex,
+      id: crypto.randomUUID(),
+      x: (hex.x || 0) + 40,
+      y: (hex.y || 0) + 40,
+      connections: []
+    }));
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: [...(prev.hexagons || []), ...clones]
+    }));
+    setSelectedIds(new Set(clones.map((hex) => hex.id)));
+  }
+
   if (user && activeBoardId) {
-    const selected = (boardData.hexagons || []).find((hex) => hex.id === selectedId);
+    const selected = (boardData.hexagons || []).find((hex) => selectedIds.has(hex.id));
     const connections = buildConnections(boardData.hexagons || []);
     return (
       <div className="page">
@@ -319,6 +429,20 @@ export default function App() {
           >
             {connectMode ? "Exit connect" : "Connect"}
           </Button>
+          <Button onClick={handleDuplicateSelected} disabled={selectedIds.size === 0}>
+            Duplicate
+          </Button>
+          <Button onClick={handleDeleteSelected} disabled={selectedIds.size === 0}>
+            Delete
+          </Button>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={showNumbers}
+              onChange={(e) => setShowNumbers(e.target.checked)}
+            />
+            Show numbers
+          </label>
           {selected ? (
             <>
               <label className="field inline-field">
@@ -352,7 +476,11 @@ export default function App() {
           className="canvas"
           width="900"
           height="500"
-          onPointerMove={handleCanvasPointerMove}
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={(event) => {
+            handleCanvasPointerMove(event);
+            handleCanvasPointerMoveMarquee(event);
+          }}
           onPointerUp={handleCanvasPointerUp}
         >
           <rect width="100%" height="100%" rx="16" fill="#f1f5f9" />
@@ -367,17 +495,28 @@ export default function App() {
               strokeWidth="2"
             />
           ))}
+          {marqueeRect ? (
+            <rect
+              x={marqueeRect.x}
+              y={marqueeRect.y}
+              width={marqueeRect.width}
+              height={marqueeRect.height}
+              fill="rgba(59,130,246,0.15)"
+              stroke="#3b82f6"
+              strokeWidth="1"
+            />
+          ) : null}
           {(boardData.hexagons || []).map((hex) => (
             <g
               key={hex.id}
               transform={`translate(${hex.x || 0} ${hex.y || 0})`}
-              onPointerDown={() => handleHexPointerDown(hex.id)}
+              onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
             >
               <polygon
                 points={getHexPoints(hexRadius)}
                 fill={hex.fillColor || "#cbd5f5"}
-                stroke={hex.id === selectedId ? "#0f172a" : "#94a3b8"}
-                strokeWidth={hex.id === selectedId ? 2 : 1}
+                stroke={selectedIds.has(hex.id) ? "#0f172a" : "#94a3b8"}
+                strokeWidth={selectedIds.has(hex.id) ? 2 : 1}
               />
               {hex.content?.type === "image" ? (
                 <image
@@ -388,6 +527,11 @@ export default function App() {
                   height="48"
                   preserveAspectRatio="xMidYMid slice"
                 />
+              ) : null}
+              {showNumbers && hex.number ? (
+                <text x={-hexRadius + 6} y={-hexRadius + 12} fontSize="10" fill="#0f172a">
+                  {hex.number}
+                </text>
               ) : null}
               <text
                 textAnchor="middle"
