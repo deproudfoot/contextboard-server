@@ -32,7 +32,6 @@ function Button({ children, ...props }) {
 export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
-  const zoomStep = 0.1;
   const autoConnectThreshold = hexRadius * 0.95;
   const breakSpeedThreshold = 1.5;
   const colorOptions = [
@@ -60,9 +59,10 @@ export default function App() {
   const [showNumbers, setShowNumbers] = useState(true);
   const [zoom, setZoom] = useState(0.5);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [panMode, setPanMode] = useState(false);
   const [panState, setPanState] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
+  const [lastSelectedId, setLastSelectedId] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const historyRef = useRef([]);
@@ -182,6 +182,7 @@ export default function App() {
       const data = board.data ?? { hexagons: [] };
       setBoardData(data);
       setSelectedIds(new Set());
+      setLastSelectedId(null);
       setZoom(0.5);
       setPan({ x: 0, y: 0 });
       historyRef.current = [];
@@ -190,6 +191,14 @@ export default function App() {
       setErr(e.message);
     }
   }
+
+  useEffect(() => {
+    if (!activeBoardId) return;
+    const svg = canvasRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    setPan({ x: rect.width / 2, y: rect.height / 2 });
+  }, [activeBoardId]);
 
   function pushHistory(nextData) {
     historyRef.current = [...historyRef.current, JSON.stringify(boardData)].slice(-20);
@@ -351,11 +360,16 @@ export default function App() {
 
   function handleAddHexagon() {
     const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
+    const svg = canvasRef.current;
+    const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+    const center = { x: rect.width / 2, y: rect.height / 2 };
+    const worldX = (center.x - pan.x) / zoom;
+    const worldY = (center.y - pan.y) / zoom;
     const next = {
       id: crypto.randomUUID(),
       number: maxNumber + 1,
-      x: 120 + (boardData.hexagons?.length || 0) * 40,
-      y: 120 + (boardData.hexagons?.length || 0) * 30,
+      x: Math.round(worldX / snapSize) * snapSize,
+      y: Math.round(worldY / snapSize) * snapSize,
       text: "New",
       fillColor: "#cbd5f5",
       connections: [],
@@ -435,6 +449,7 @@ export default function App() {
       return new Set([hexId]);
     })();
     setSelectedIds(currentSelection);
+    setLastSelectedId(hexId);
     const dragIds = (() => {
       if (currentSelection.size > 1) return currentSelection;
       const connected = new Set([hexId]);
@@ -541,19 +556,19 @@ export default function App() {
   }
 
   function handleCanvasPointerDown(event) {
-    if (panMode) {
-      setPanState({ startX: event.clientX, startY: event.clientY, origin: { ...pan } });
-      return;
-    }
     if (event.target.tagName !== "svg" && event.target.tagName !== "rect") return;
     const rect = event.currentTarget.getBoundingClientRect();
     const start = {
       x: (event.clientX - rect.left - pan.x) / zoom,
       y: (event.clientY - rect.top - pan.y) / zoom
     };
-    setMarqueeStart(start);
-    setMarqueeRect({ x: start.x, y: start.y, width: 0, height: 0 });
-    setSelectedIds(new Set());
+    if (event.shiftKey) {
+      setMarqueeStart(start);
+      setMarqueeRect({ x: start.x, y: start.y, width: 0, height: 0 });
+      setSelectedIds(new Set());
+    } else {
+      setPanState({ startX: event.clientX, startY: event.clientY, origin: { ...pan } });
+    }
   }
 
   function handleCanvasPointerMoveMarquee(event) {
@@ -612,8 +627,11 @@ export default function App() {
     }
     const rect = svg.getBoundingClientRect();
     const center = { x: rect.width / 2, y: rect.height / 2 };
-    const worldX = (center.x - pan.x) / zoom;
-    const worldY = (center.y - pan.y) / zoom;
+    const target = lastSelectedId
+      ? (boardData.hexagons || []).find((hex) => hex.id === lastSelectedId)
+      : null;
+    const worldX = target ? target.x || 0 : (center.x - pan.x) / zoom;
+    const worldY = target ? target.y || 0 : (center.y - pan.y) / zoom;
     setZoom(nextZoom);
     setPan({
       x: center.x - worldX * nextZoom,
@@ -667,45 +685,34 @@ export default function App() {
             Redo
           </Button>
           {err ? <span className="board-error">{err}</span> : null}
+          <button className="icon-button" onClick={() => setShowSettings((prev) => !prev)}>
+            ⚙️
+          </button>
           <Button onClick={logout}>Log out</Button>
         </div>
-        <div className="board-controls">
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={showNumbers}
-              onChange={(e) => setShowNumbers(e.target.checked)}
-            />
-            Show numbers
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={panMode}
-              onChange={(e) => setPanMode(e.target.checked)}
-            />
-            Pan
-          </label>
-          <label className="zoom-label">
-            Zoom
-            <input
-              type="range"
-              min="0.2"
-              max="5"
-              step="0.05"
-              value={zoom}
-              onChange={(e) => setZoomWithCenter(Number(e.target.value))}
-            />
-          </label>
-          <Button
-            onClick={() => {
-              setZoom(0.5);
-              setPan({ x: 0, y: 0 });
-            }}
-          >
-            Reset view
-          </Button>
+        <div className="zoom-rail">
+          <input
+            className="zoom-slider"
+            type="range"
+            min="0.2"
+            max="6.25"
+            step="0.05"
+            value={zoom}
+            onChange={(e) => setZoomWithCenter(Number(e.target.value))}
+          />
         </div>
+        {showSettings ? (
+          <div className="settings-panel">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={showNumbers}
+                onChange={(e) => setShowNumbers(e.target.checked)}
+              />
+              Show numbers
+            </label>
+          </div>
+        ) : null}
         <svg
           ref={canvasRef}
           className="canvas"
