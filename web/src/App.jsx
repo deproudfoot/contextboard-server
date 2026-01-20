@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   login,
   register,
@@ -31,6 +31,7 @@ function Button({ children, ...props }) {
 export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
+  const zoomStep = 0.1;
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -49,8 +50,14 @@ export default function App() {
   const [connectMode, setConnectMode] = useState(false);
   const [connectFromId, setConnectFromId] = useState(null);
   const [showNumbers, setShowNumbers] = useState(true);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panMode, setPanMode] = useState(false);
+  const [panState, setPanState] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const historyRef = useRef([]);
+  const redoRef = useRef([]);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -138,9 +145,33 @@ export default function App() {
       setSelectedIds(new Set());
       setConnectMode(false);
       setConnectFromId(null);
+      setZoom(1);
+      setPan({ x: 0, y: 0 });
+      historyRef.current = [];
+      redoRef.current = [];
     } catch (e) {
       setErr(e.message);
     }
+  }
+
+  function pushHistory(nextData) {
+    historyRef.current = [...historyRef.current, JSON.stringify(boardData)].slice(-20);
+    redoRef.current = [];
+    setBoardData(nextData);
+  }
+
+  function undo() {
+    const prev = historyRef.current.pop();
+    if (!prev) return;
+    redoRef.current = [...redoRef.current, JSON.stringify(boardData)].slice(-20);
+    setBoardData(JSON.parse(prev));
+  }
+
+  function redo() {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    historyRef.current = [...historyRef.current, JSON.stringify(boardData)].slice(-20);
+    setBoardData(JSON.parse(next));
   }
 
   async function handleSaveBoard() {
@@ -163,8 +194,8 @@ export default function App() {
   function handleCanvasPointerMove(event) {
     if (!dragState) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const rawX = event.clientX - rect.left;
-    const rawY = event.clientY - rect.top;
+    const rawX = (event.clientX - rect.left - pan.x) / zoom;
+    const rawY = (event.clientY - rect.top - pan.y) / zoom;
     const x = Math.round(rawX / snapSize) * snapSize;
     const y = Math.round(rawY / snapSize) * snapSize;
     const dx = x - dragState.startX;
@@ -184,6 +215,12 @@ export default function App() {
   }
 
   function handleCanvasPointerUp() {
+    if (dragState) {
+      pushHistory(boardData);
+    }
+    if (panState) {
+      setPanState(null);
+    }
     setDragState(null);
     setMarqueeStart(null);
     setMarqueeRect(null);
@@ -201,29 +238,29 @@ export default function App() {
       connections: [],
       content: null
     };
-    setBoardData((prev) => ({
-      ...prev,
-      hexagons: [...(prev.hexagons || []), next]
-    }));
+    pushHistory({
+      ...boardData,
+      hexagons: [...(boardData.hexagons || []), next]
+    });
     setSelectedIds(new Set([next.id]));
   }
 
   function handleLabelChange(value) {
-    setBoardData((prev) => ({
-      ...prev,
-      hexagons: (prev.hexagons || []).map((hex) =>
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || []).map((hex) =>
         selectedIds.has(hex.id) ? { ...hex, text: value } : hex
       )
-    }));
+    });
   }
 
   function handleColorChange(value) {
-    setBoardData((prev) => ({
-      ...prev,
-      hexagons: (prev.hexagons || []).map((hex) =>
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || []).map((hex) =>
         selectedIds.has(hex.id) ? { ...hex, fillColor: value } : hex
       )
-    }));
+    });
   }
 
   function handleMediaChange(file) {
@@ -242,12 +279,12 @@ export default function App() {
         ? "pdf"
         : "file";
       const payload = { type, dataUrl, name: file.name };
-      setBoardData((prev) => ({
-        ...prev,
-        hexagons: (prev.hexagons || []).map((hex) =>
+      pushHistory({
+        ...boardData,
+        hexagons: (boardData.hexagons || []).map((hex) =>
           selectedIds.has(hex.id) ? { ...hex, content: payload } : hex
         )
-      }));
+      });
     };
     reader.readAsDataURL(file);
   }
@@ -263,9 +300,9 @@ export default function App() {
         setConnectFromId(null);
         return;
       }
-      setBoardData((prev) => ({
-        ...prev,
-        hexagons: (prev.hexagons || []).map((hex) => {
+      pushHistory({
+        ...boardData,
+        hexagons: (boardData.hexagons || []).map((hex) => {
           if (hex.id === connectFromId && !hex.connections.includes(hexId)) {
             return { ...hex, connections: [...hex.connections, hexId] };
           }
@@ -274,14 +311,14 @@ export default function App() {
           }
           return hex;
         })
-      }));
+      });
       setConnectFromId(null);
       setSelectedIds(new Set([hexId]));
       return;
     }
     const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
-    const localX = rect ? event.clientX - rect.left : event.clientX;
-    const localY = rect ? event.clientY - rect.top : event.clientY;
+    const localX = rect ? (event.clientX - rect.left - pan.x) / zoom : event.clientX;
+    const localY = rect ? (event.clientY - rect.top - pan.y) / zoom : event.clientY;
     const isToggle = event.shiftKey;
     const currentSelection = (() => {
       const next = new Set(selectedIds);
@@ -336,20 +373,34 @@ export default function App() {
   }
 
   function handleCanvasPointerDown(event) {
+    if (panMode) {
+      setPanState({ startX: event.clientX, startY: event.clientY, origin: { ...pan } });
+      return;
+    }
     if (connectMode) return;
     if (event.target.tagName !== "svg" && event.target.tagName !== "rect") return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const start = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const start = {
+      x: (event.clientX - rect.left - pan.x) / zoom,
+      y: (event.clientY - rect.top - pan.y) / zoom
+    };
     setMarqueeStart(start);
     setMarqueeRect({ x: start.x, y: start.y, width: 0, height: 0 });
     setSelectedIds(new Set());
   }
 
   function handleCanvasPointerMoveMarquee(event) {
+    if (panState) {
+      setPan({
+        x: panState.origin.x + (event.clientX - panState.startX),
+        y: panState.origin.y + (event.clientY - panState.startY)
+      });
+      return;
+    }
     if (!marqueeStart) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
+    const x = (event.clientX - rect.left - pan.x) / zoom;
+    const y = (event.clientY - rect.top - pan.y) / zoom;
     const nextRect = {
       x: Math.min(marqueeStart.x, x),
       y: Math.min(marqueeStart.y, y),
@@ -374,15 +425,15 @@ export default function App() {
 
   function handleDeleteSelected() {
     if (selectedIds.size === 0) return;
-    setBoardData((prev) => ({
-      ...prev,
-      hexagons: (prev.hexagons || [])
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || [])
         .filter((hex) => !selectedIds.has(hex.id))
         .map((hex) => ({
           ...hex,
           connections: (hex.connections || []).filter((id) => !selectedIds.has(id))
         }))
-    }));
+    });
     setSelectedIds(new Set());
   }
 
@@ -396,10 +447,10 @@ export default function App() {
       y: (hex.y || 0) + 40,
       connections: []
     }));
-    setBoardData((prev) => ({
-      ...prev,
-      hexagons: [...(prev.hexagons || []), ...clones]
-    }));
+    pushHistory({
+      ...boardData,
+      hexagons: [...(boardData.hexagons || []), ...clones]
+    });
     setSelectedIds(new Set(clones.map((hex) => hex.id)));
   }
 
@@ -429,11 +480,34 @@ export default function App() {
           >
             {connectMode ? "Exit connect" : "Connect"}
           </Button>
+          <Button onClick={() => setPanMode((prev) => !prev)}>
+            {panMode ? "Exit pan" : "Pan"}
+          </Button>
+          <Button onClick={() => setZoom((prev) => Math.max(0.4, prev - zoomStep))}>
+            Zoom -
+          </Button>
+          <Button onClick={() => setZoom((prev) => Math.min(2.5, prev + zoomStep))}>
+            Zoom +
+          </Button>
+          <Button
+            onClick={() => {
+              setZoom(1);
+              setPan({ x: 0, y: 0 });
+            }}
+          >
+            Reset view
+          </Button>
           <Button onClick={handleDuplicateSelected} disabled={selectedIds.size === 0}>
             Duplicate
           </Button>
           <Button onClick={handleDeleteSelected} disabled={selectedIds.size === 0}>
             Delete
+          </Button>
+          <Button onClick={undo} disabled={historyRef.current.length === 0}>
+            Undo
+          </Button>
+          <Button onClick={redo} disabled={redoRef.current.length === 0}>
+            Redo
           </Button>
           <label className="toggle">
             <input
@@ -484,67 +558,69 @@ export default function App() {
           onPointerUp={handleCanvasPointerUp}
         >
           <rect width="100%" height="100%" rx="16" fill="#f1f5f9" />
-          {connections.map((line) => (
-            <line
-              key={line.key}
-              x1={line.from.x || 0}
-              y1={line.from.y || 0}
-              x2={line.to.x || 0}
-              y2={line.to.y || 0}
-              stroke="#475569"
-              strokeWidth="2"
-            />
-          ))}
-          {marqueeRect ? (
-            <rect
-              x={marqueeRect.x}
-              y={marqueeRect.y}
-              width={marqueeRect.width}
-              height={marqueeRect.height}
-              fill="rgba(59,130,246,0.15)"
-              stroke="#3b82f6"
-              strokeWidth="1"
-            />
-          ) : null}
-          {(boardData.hexagons || []).map((hex) => (
-            <g
-              key={hex.id}
-              transform={`translate(${hex.x || 0} ${hex.y || 0})`}
-              onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
-            >
-              <polygon
-                points={getHexPoints(hexRadius)}
-                fill={hex.fillColor || "#cbd5f5"}
-                stroke={selectedIds.has(hex.id) ? "#0f172a" : "#94a3b8"}
-                strokeWidth={selectedIds.has(hex.id) ? 2 : 1}
+          <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+            {connections.map((line) => (
+              <line
+                key={line.key}
+                x1={line.from.x || 0}
+                y1={line.from.y || 0}
+                x2={line.to.x || 0}
+                y2={line.to.y || 0}
+                stroke="#475569"
+                strokeWidth="2"
               />
-              {hex.content?.type === "image" ? (
-                <image
-                  href={hex.content.dataUrl}
-                  x={-24}
-                  y={-24}
-                  width="48"
-                  height="48"
-                  preserveAspectRatio="xMidYMid slice"
-                />
-              ) : null}
-              {showNumbers && hex.number ? (
-                <text x={-hexRadius + 6} y={-hexRadius + 12} fontSize="10" fill="#0f172a">
-                  {hex.number}
-                </text>
-              ) : null}
-              <text
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fontSize="12"
-                fill="#0f172a"
+            ))}
+            {marqueeRect ? (
+              <rect
+                x={marqueeRect.x}
+                y={marqueeRect.y}
+                width={marqueeRect.width}
+                height={marqueeRect.height}
+                fill="rgba(59,130,246,0.15)"
+                stroke="#3b82f6"
+                strokeWidth="1"
+              />
+            ) : null}
+            {(boardData.hexagons || []).map((hex) => (
+              <g
+                key={hex.id}
+                transform={`translate(${hex.x || 0} ${hex.y || 0})`}
+                onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
               >
-                {hex.content?.type && hex.content?.type !== "image"
-                  ? hex.content.type.toUpperCase()
-                  : hex.text || "Hex"}
-              </text>
-            </g>
-          ))}
+                <polygon
+                  points={getHexPoints(hexRadius)}
+                  fill={hex.fillColor || "#cbd5f5"}
+                  stroke={selectedIds.has(hex.id) ? "#0f172a" : "#94a3b8"}
+                  strokeWidth={selectedIds.has(hex.id) ? 2 : 1}
+                />
+                {hex.content?.type === "image" ? (
+                  <image
+                    href={hex.content.dataUrl}
+                    x={-24}
+                    y={-24}
+                    width="48"
+                    height="48"
+                    preserveAspectRatio="xMidYMid slice"
+                  />
+                ) : null}
+                {showNumbers && hex.number ? (
+                  <text x={-hexRadius + 6} y={-hexRadius + 12} fontSize="10" fill="#0f172a">
+                    {hex.number}
+                  </text>
+                ) : null}
+                <text
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize="12"
+                  fill="#0f172a"
+                >
+                  {hex.content?.type && hex.content?.type !== "image"
+                    ? hex.content.type.toUpperCase()
+                    : hex.text || "Hex"}
+                </text>
+              </g>
+            ))}
+          </g>
         </svg>
         <details className="raw-json">
           <summary>Raw JSON</summary>
