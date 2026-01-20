@@ -63,6 +63,15 @@ textarea {
   outline: none;
 }
 
+input[type="color"] {
+  padding: 0;
+  height: 38px;
+}
+
+input[type="file"] {
+  padding: 8px;
+}
+
 textarea {
   resize: vertical;
   min-height: 200px;
@@ -145,6 +154,7 @@ textarea {
   border: 1px solid #e2e8f0;
   border-radius: 16px;
   margin-bottom: 16px;
+  background: #f8fafc;
 }
 
 .raw-json {

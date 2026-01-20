@@ -29,6 +29,8 @@ function Button({ children, ...props }) {
 }
 
 export default function App() {
+  const hexRadius = 36;
+  const snapSize = 20;
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -42,6 +44,8 @@ export default function App() {
   const [boardData, setBoardData] = useState({ hexagons: [] });
   const [selectedId, setSelectedId] = useState(null);
   const [dragState, setDragState] = useState(null);
+  const [connectMode, setConnectMode] = useState(false);
+  const [connectFromId, setConnectFromId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -129,6 +133,8 @@ export default function App() {
       const data = board.data ?? { hexagons: [] };
       setBoardData(data);
       setSelectedId(null);
+      setConnectMode(false);
+      setConnectFromId(null);
     } catch (e) {
       setErr(e.message);
     }
@@ -154,8 +160,10 @@ export default function App() {
   function handleCanvasPointerMove(event) {
     if (!dragState) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
+    const rawX = event.clientX - rect.left;
+    const rawY = event.clientY - rect.top;
+    const x = Math.round(rawX / snapSize) * snapSize;
+    const y = Math.round(rawY / snapSize) * snapSize;
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
@@ -173,7 +181,10 @@ export default function App() {
       id: crypto.randomUUID(),
       x: 120 + (boardData.hexagons?.length || 0) * 40,
       y: 120 + (boardData.hexagons?.length || 0) * 30,
-      text: "New"
+      text: "New",
+      fillColor: "#cbd5f5",
+      connections: [],
+      content: null
     };
     setBoardData((prev) => ({
       ...prev,
@@ -191,8 +202,100 @@ export default function App() {
     }));
   }
 
+  function handleColorChange(value) {
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: (prev.hexagons || []).map((hex) =>
+        hex.id === selectedId ? { ...hex, fillColor: value } : hex
+      )
+    }));
+  }
+
+  function handleMediaChange(file) {
+    if (!file || !selectedId) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      if (!dataUrl || typeof dataUrl !== "string") return;
+      const type = file.type.startsWith("image/")
+        ? "image"
+        : file.type.startsWith("video/")
+        ? "video"
+        : file.type.startsWith("audio/")
+        ? "audio"
+        : file.type === "application/pdf"
+        ? "pdf"
+        : "file";
+      const payload = { type, dataUrl, name: file.name };
+      setBoardData((prev) => ({
+        ...prev,
+        hexagons: (prev.hexagons || []).map((hex) =>
+          hex.id === selectedId ? { ...hex, content: payload } : hex
+        )
+      }));
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function handleHexPointerDown(hexId) {
+    if (connectMode) {
+      if (!connectFromId) {
+        setConnectFromId(hexId);
+        setSelectedId(hexId);
+        return;
+      }
+      if (connectFromId === hexId) {
+        setConnectFromId(null);
+        return;
+      }
+      setBoardData((prev) => ({
+        ...prev,
+        hexagons: (prev.hexagons || []).map((hex) => {
+          if (hex.id === connectFromId && !hex.connections.includes(hexId)) {
+            return { ...hex, connections: [...hex.connections, hexId] };
+          }
+          if (hex.id === hexId && !hex.connections.includes(connectFromId)) {
+            return { ...hex, connections: [...hex.connections, connectFromId] };
+          }
+          return hex;
+        })
+      }));
+      setConnectFromId(null);
+      setSelectedId(hexId);
+      return;
+    }
+    setSelectedId(hexId);
+    setDragState({ id: hexId });
+  }
+
+  function getHexPoints(radius) {
+    const points = [];
+    for (let i = 0; i < 6; i += 1) {
+      const angle = ((60 * i - 30) * Math.PI) / 180;
+      points.push([radius * Math.cos(angle), radius * Math.sin(angle)].join(","));
+    }
+    return points.join(" ");
+  }
+
+  function buildConnections(hexagons) {
+    const seen = new Set();
+    const lines = [];
+    hexagons.forEach((hex) => {
+      (hex.connections || []).forEach((targetId) => {
+        const key = [hex.id, targetId].sort().join("-");
+        if (seen.has(key)) return;
+        const target = hexagons.find((other) => other.id === targetId);
+        if (!target) return;
+        seen.add(key);
+        lines.push({ from: hex, to: target, key });
+      });
+    });
+    return lines;
+  }
+
   if (user && activeBoardId) {
     const selected = (boardData.hexagons || []).find((hex) => hex.id === selectedId);
+    const connections = buildConnections(boardData.hexagons || []);
     return (
       <div className="page">
         <div className="toolbar">
@@ -208,16 +311,41 @@ export default function App() {
         />
         <div className="toolbar">
           <Button onClick={handleAddHexagon}>Add hexagon</Button>
+          <Button
+            onClick={() => {
+              setConnectMode((prev) => !prev);
+              setConnectFromId(null);
+            }}
+          >
+            {connectMode ? "Exit connect" : "Connect"}
+          </Button>
           {selected ? (
-            <label className="field inline-field">
-              <div className="field-label">Label</div>
-              <input
-                value={selected.text || ""}
-                onChange={(e) => handleLabelChange(e.target.value)}
-              />
-            </label>
+            <>
+              <label className="field inline-field">
+                <div className="field-label">Label</div>
+                <input
+                  value={selected.text || ""}
+                  onChange={(e) => handleLabelChange(e.target.value)}
+                />
+              </label>
+              <label className="field inline-field">
+                <div className="field-label">Color</div>
+                <input
+                  type="color"
+                  value={selected.fillColor || "#cbd5f5"}
+                  onChange={(e) => handleColorChange(e.target.value)}
+                />
+              </label>
+              <label className="field inline-field">
+                <div className="field-label">Media</div>
+                <input
+                  type="file"
+                  onChange={(e) => handleMediaChange(e.target.files?.[0])}
+                />
+              </label>
+            </>
           ) : (
-            <div className="muted">Select a hexagon to edit its label.</div>
+            <div className="muted">Select a hexagon to edit its label, color, or media.</div>
           )}
         </div>
         <svg
@@ -228,23 +356,48 @@ export default function App() {
           onPointerUp={handleCanvasPointerUp}
         >
           <rect width="100%" height="100%" rx="16" fill="#f1f5f9" />
+          {connections.map((line) => (
+            <line
+              key={line.key}
+              x1={line.from.x || 0}
+              y1={line.from.y || 0}
+              x2={line.to.x || 0}
+              y2={line.to.y || 0}
+              stroke="#475569"
+              strokeWidth="2"
+            />
+          ))}
           {(boardData.hexagons || []).map((hex) => (
             <g
               key={hex.id}
               transform={`translate(${hex.x || 0} ${hex.y || 0})`}
-              onPointerDown={() => {
-                setSelectedId(hex.id);
-                setDragState({ id: hex.id });
-              }}
+              onPointerDown={() => handleHexPointerDown(hex.id)}
             >
-              <circle r="36" fill={hex.id === selectedId ? "#94a3b8" : "#cbd5f5"} />
+              <polygon
+                points={getHexPoints(hexRadius)}
+                fill={hex.fillColor || "#cbd5f5"}
+                stroke={hex.id === selectedId ? "#0f172a" : "#94a3b8"}
+                strokeWidth={hex.id === selectedId ? 2 : 1}
+              />
+              {hex.content?.type === "image" ? (
+                <image
+                  href={hex.content.dataUrl}
+                  x={-24}
+                  y={-24}
+                  width="48"
+                  height="48"
+                  preserveAspectRatio="xMidYMid slice"
+                />
+              ) : null}
               <text
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fontSize="12"
                 fill="#0f172a"
               >
-                {hex.text || "Hex"}
+                {hex.content?.type && hex.content?.type !== "image"
+                  ? hex.content.type.toUpperCase()
+                  : hex.text || "Hex"}
               </text>
             </g>
           ))}
