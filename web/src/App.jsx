@@ -271,6 +271,26 @@ export default function App() {
     const now = event.timeStamp || Date.now();
     const deltaTime = Math.max(1, now - dragState.lastTime);
     const speed = Math.hypot(x - dragState.lastX, y - dragState.lastY) / deltaTime;
+
+    if (!dragState.breakConnections && now - dragState.startTime < 200) {
+      const velocity = speed * 1000;
+      if (velocity > disconnectVelocityThreshold) {
+        const nextHexagons = clearConnectionsFor(boardData.hexagons || [], dragState.id);
+        setBoardData({ ...boardData, hexagons: nextHexagons });
+        setDragState({
+          ...dragState,
+          startPositions: { [dragState.id]: { x, y } },
+          startX: x,
+          startY: y,
+          lastX: x,
+          lastY: y,
+          lastTime: now,
+          lastSpeed: speed,
+          breakConnections: true
+        });
+        return;
+      }
+    }
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
@@ -298,22 +318,18 @@ export default function App() {
 
   function handleCanvasPointerUp() {
     if (dragState) {
-      const velocity = (dragState.lastSpeed || 0) * 1000;
       const hexSize = hexRadius * 2;
       const snapDistance = hexSize * snapRatio;
       const snapDistanceSquared = snapDistance * snapDistance;
       let nextHexagons = boardData.hexagons || [];
 
-      if (velocity > disconnectVelocityThreshold) {
-        nextHexagons = clearConnectionsFor(nextHexagons, dragState.id);
-      } else {
-        const result = snapHexagonToNeighbors(
+      if (!dragState.breakConnections) {
+        nextHexagons = snapHexagonToNeighbors(
           nextHexagons,
           dragState.id,
           snapDistance,
           snapDistanceSquared
         );
-        nextHexagons = result;
       }
       pushHistory({ ...boardData, hexagons: nextHexagons });
     }
@@ -452,7 +468,9 @@ export default function App() {
       lastX: localX,
       lastY: localY,
       lastTime: event.timeStamp || Date.now(),
-      lastSpeed: 0
+      lastSpeed: 0,
+      startTime: event.timeStamp || Date.now(),
+      breakConnections: false
     });
   }
 
@@ -840,6 +858,7 @@ export default function App() {
             ) : null}
             {(boardData.hexagons || []).map((hex) => {
               const clipId = `clip-${hex.id}`;
+              const gradientId = `grad-${hex.id}`;
               return (
               <g
                 key={hex.id}
@@ -852,12 +871,21 @@ export default function App() {
                   <clipPath id={clipId}>
                     <polygon points={getHexPoints(hexRadius)} />
                   </clipPath>
+                  <radialGradient id={gradientId} cx="35%" cy="30%" r="70%">
+                    <stop offset="0%" stopColor="rgba(255,255,255,0.65)" />
+                    <stop offset="45%" stopColor="rgba(255,255,255,0.1)" />
+                    <stop offset="100%" stopColor="rgba(0,0,0,0.25)" />
+                  </radialGradient>
                 </defs>
                 <polygon
                   points={getHexPoints(hexRadius)}
                   fill={hex.fillColor || "#cbd5f5"}
                   stroke={selectedIds.has(hex.id) ? "#0f172a" : "#94a3b8"}
                   strokeWidth={selectedIds.has(hex.id) ? 2 : 1}
+                />
+                <polygon
+                  points={getHexPoints(hexRadius)}
+                  fill={`url(#${gradientId})`}
                 />
                 {hex.content?.type ? (
                   <g clipPath={`url(#${clipId})`}>
