@@ -32,6 +32,8 @@ export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
   const zoomStep = 0.1;
+  const autoConnectThreshold = hexRadius * 0.95;
+  const breakSpeedThreshold = 1.5;
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -200,6 +202,9 @@ export default function App() {
     const y = Math.round(rawY / snapSize) * snapSize;
     const dx = x - dragState.startX;
     const dy = y - dragState.startY;
+    const now = event.timeStamp || Date.now();
+    const deltaTime = Math.max(1, now - dragState.lastTime);
+    const speed = Math.hypot(x - dragState.lastX, y - dragState.lastY) / deltaTime;
     setBoardData((prev) => ({
       ...prev,
       hexagons: (prev.hexagons || []).map((hex) =>
@@ -212,11 +217,78 @@ export default function App() {
           : hex
       )
     }));
+    setDragState((prev) =>
+      prev
+        ? {
+            ...prev,
+            lastX: x,
+            lastY: y,
+            lastTime: now,
+            breakConnections: prev.breakConnections || speed > breakSpeedThreshold
+          }
+        : prev
+    );
   }
 
   function handleCanvasPointerUp() {
     if (dragState) {
-      pushHistory(boardData);
+      const movedIds = Object.keys(dragState.startPositions);
+      const shouldBreak = (hex, allHexes) => {
+        if (!dragState.breakConnections) return false;
+        return (hex.connections || []).some((id) => {
+          const target = allHexes.find((item) => item.id === id);
+          if (!target) return false;
+          const distance = Math.hypot((hex.x || 0) - (target.x || 0), (hex.y || 0) - (target.y || 0));
+          return distance > hexRadius;
+        });
+      };
+      const brokenIds = new Set(
+        (boardData.hexagons || [])
+          .filter((hex) => movedIds.includes(hex.id) && shouldBreak(hex, boardData.hexagons || []))
+          .map((hex) => hex.id)
+      );
+      let updatedHexes = (boardData.hexagons || []).map((hex) => {
+        if (!movedIds.includes(hex.id)) return hex;
+        let connections = hex.connections || [];
+        if (brokenIds.has(hex.id)) {
+          connections = [];
+        }
+        return { ...hex, connections };
+      });
+      if (dragState.breakConnections && brokenIds.size > 0) {
+        updatedHexes = updatedHexes.map((hex) => ({
+          ...hex,
+          connections: (hex.connections || []).filter((id) => !brokenIds.has(id))
+        }));
+      }
+      const autoConnected = updatedHexes.map((hex) => {
+        if (!movedIds.includes(hex.id)) return hex;
+        let connections = new Set(hex.connections || []);
+        updatedHexes.forEach((other) => {
+          if (hex.id === other.id) return;
+          const distance = Math.hypot((hex.x || 0) - (other.x || 0), (hex.y || 0) - (other.y || 0));
+          if (distance <= autoConnectThreshold) {
+            connections.add(other.id);
+          }
+        });
+        return { ...hex, connections: Array.from(connections) };
+      });
+      const map = new Map(
+        autoConnected.map((hex) => [hex.id, { ...hex, connections: new Set(hex.connections || []) }])
+      );
+      map.forEach((hex) => {
+        hex.connections.forEach((id) => {
+          const target = map.get(id);
+          if (target) {
+            target.connections.add(hex.id);
+          }
+        });
+      });
+      const bidirectional = Array.from(map.values()).map((hex) => ({
+        ...hex,
+        connections: Array.from(hex.connections)
+      }));
+      pushHistory({ ...boardData, hexagons: bidirectional });
     }
     if (panState) {
       setPanState(null);
@@ -330,7 +402,19 @@ export default function App() {
         }
         return next;
       }
-      return new Set([hexId]);
+      const connected = new Set([hexId]);
+      const queue = [hexId];
+      while (queue.length) {
+        const current = queue.pop();
+        const node = (boardData.hexagons || []).find((hex) => hex.id === current);
+        (node?.connections || []).forEach((id) => {
+          if (!connected.has(id)) {
+            connected.add(id);
+            queue.push(id);
+          }
+        });
+      }
+      return connected;
     })();
     setSelectedIds(currentSelection);
     const startPositions = {};
@@ -343,7 +427,11 @@ export default function App() {
       id: hexId,
       startX: localX,
       startY: localY,
-      startPositions
+      startPositions,
+      lastX: localX,
+      lastY: localY,
+      lastTime: event.timeStamp || Date.now(),
+      breakConnections: false
     });
   }
 
