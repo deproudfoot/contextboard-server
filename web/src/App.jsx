@@ -409,8 +409,8 @@ export default function App() {
     const svg = canvasRef.current;
     if (!svg) return false;
     const rect = svg.getBoundingClientRect();
+    const zoomValue = 0.5;
     if (viewport.center && typeof viewport.center.x === "number" && typeof viewport.center.y === "number") {
-      const zoomValue = viewport.zoom;
       setZoom(zoomValue);
       setPan({
         x: rect.width / 2 - viewport.center.x * zoomValue,
@@ -419,7 +419,7 @@ export default function App() {
       return true;
     }
     if (viewport.pan && typeof viewport.pan.x === "number" && typeof viewport.pan.y === "number") {
-      setZoom(viewport.zoom);
+      setZoom(zoomValue);
       setPan({ x: viewport.pan.x, y: viewport.pan.y });
       return true;
     }
