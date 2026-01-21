@@ -102,6 +102,7 @@ export default function App() {
   const suppressBroadcastRef = useRef(false);
   const clientId = useRef(crypto.randomUUID());
   const [presence, setPresence] = useState({});
+  const [presenceList, setPresenceList] = useState([]);
   const presenceTimer = useRef(null);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
@@ -187,6 +188,9 @@ export default function App() {
             ...prev,
             [message.sender]: { cursor: message.cursor, label: message.label }
           }));
+        }
+        if (message.type === "presence_state") {
+          setPresenceList(message.users || []);
         }
       } catch {
         // ignore
@@ -1116,6 +1120,11 @@ export default function App() {
           ) : (
             <span className="role-badge">Read only</span>
           )}
+          {presenceList.length ? (
+            <div className="presence-list">
+              Online: {presenceList.map((item) => item.label).join(", ")}
+            </div>
+          ) : null}
           {err ? <span className="board-error">{err}</span> : null}
           {isOwner && !sharedView ? (
             <button
@@ -1297,14 +1306,16 @@ export default function App() {
                 strokeWidth="1"
               />
             ) : null}
-            {Object.entries(presence).map(([id, data]) => (
-              <g key={id} transform={`translate(${data.cursor.x || 0} ${data.cursor.y || 0})`}>
-                <circle r="6" fill="#38bdf8" />
-                <text x="10" y="4" fontSize="10" fill="#0f172a">
-                  {data.label || "User"}
-                </text>
-              </g>
-            ))}
+            {Object.entries(presence)
+              .filter(([, data]) => data.cursor && typeof data.cursor.x === "number")
+              .map(([id, data]) => (
+                <g key={id} transform={`translate(${data.cursor.x} ${data.cursor.y})`}>
+                  <circle r="6" fill="#38bdf8" />
+                  <text x="10" y="4" fontSize="10" fill="#0f172a">
+                    {data.label || "User"}
+                  </text>
+                </g>
+              ))}
             {(boardData.hexagons || []).map((hex) => {
               const clipId = `clip-${hex.id}`;
               const gradientId = `grad-${hex.id}`;

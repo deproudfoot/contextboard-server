@@ -357,6 +357,7 @@ const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
 const rooms = new Map();
+const roomPresence = new Map();
 
 function addToRoom(boardId, socket) {
   if (!rooms.has(boardId)) {
@@ -374,6 +375,37 @@ function removeFromRoom(boardId, socket) {
   }
 }
 
+function addPresence(boardId, connectionId, label) {
+  if (!roomPresence.has(boardId)) {
+    roomPresence.set(boardId, new Map());
+  }
+  roomPresence.get(boardId).set(connectionId, { label });
+}
+
+function removePresence(boardId, connectionId) {
+  if (!roomPresence.has(boardId)) return;
+  const room = roomPresence.get(boardId);
+  room.delete(connectionId);
+  if (room.size === 0) {
+    roomPresence.delete(boardId);
+  }
+}
+
+function broadcastPresenceState(boardId) {
+  const room = rooms.get(boardId) || new Set();
+  const presence = roomPresence.get(boardId) || new Map();
+  const users = Array.from(presence.entries()).map(([id, data]) => ({
+    id,
+    label: data.label
+  }));
+  const payload = JSON.stringify({ type: "presence_state", boardId, users });
+  room.forEach((client) => {
+    if (client.readyState === client.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
 wss.on("connection", async (socket, req) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -389,10 +421,14 @@ wss.on("connection", async (socket, req) => {
       socket.close(1008, "Unauthorized");
       return;
     }
+    const connectionId = crypto.randomUUID();
     socket.boardId = boardId;
     socket.userId = payload.sub;
     socket.accessRole = getAccessRole(board, payload.sub);
+    socket.connectionId = connectionId;
     addToRoom(boardId, socket);
+    addPresence(boardId, connectionId, payload.email || "User");
+    broadcastPresenceState(boardId);
     socket.on("message", (data) => {
       let message;
       try {
@@ -437,6 +473,8 @@ wss.on("connection", async (socket, req) => {
     });
     socket.on("close", () => {
       removeFromRoom(boardId, socket);
+      removePresence(boardId, connectionId);
+      broadcastPresenceState(boardId);
     });
   } catch (error) {
     socket.close(1011, "Server error");
