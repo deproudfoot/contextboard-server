@@ -136,7 +136,9 @@ export default function App() {
         setSharedRole(response.role || "view");
         setActiveBoardId(response.board.id);
         setBoardTitle(response.board.title || "Shared board");
-        setBoardData(response.board.data || { hexagons: [] });
+        const data = response.board.data || { hexagons: [] };
+        setBoardData(data);
+        applyViewportFromData(data);
         setActiveBoardRole("viewer");
         setActiveBoardOwnerEmail(null);
       })
@@ -289,11 +291,12 @@ export default function App() {
 
   useEffect(() => {
     if (!activeBoardId) return;
+    if (boardData?.viewport?.pan && typeof boardData.viewport.zoom === "number") return;
     const svg = canvasRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
     setPan({ x: rect.width / 2, y: rect.height / 2 });
-  }, [activeBoardId]);
+  }, [activeBoardId, boardData?.viewport?.pan, boardData?.viewport?.zoom]);
 
   const canEdit = !sharedView && (activeBoardRole === "owner" || activeBoardRole === "editor");
   const isReadOnly = !canEdit;
@@ -374,8 +377,10 @@ export default function App() {
       setBoardData(data);
       setSelectedIds(new Set());
       setLastSelectedId(null);
-      setZoom(0.5);
-      setPan({ x: 0, y: 0 });
+      if (!applyViewportFromData(data)) {
+        setZoom(0.5);
+        setPan({ x: 0, y: 0 });
+      }
       historyRef.current = [];
       redoRef.current = [];
     } catch (e) {
@@ -383,13 +388,16 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    if (!activeBoardId) return;
-    const svg = canvasRef.current;
-    if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    setPan({ x: rect.width / 2, y: rect.height / 2 });
-  }, [activeBoardId]);
+  function applyViewportFromData(data) {
+    const viewport = data?.viewport;
+    if (!viewport || typeof viewport.zoom !== "number") return false;
+    if (!viewport.pan || typeof viewport.pan.x !== "number" || typeof viewport.pan.y !== "number") {
+      return false;
+    }
+    setZoom(viewport.zoom);
+    setPan({ x: viewport.pan.x, y: viewport.pan.y });
+    return true;
+  }
 
   function pushHistory(nextData) {
     historyRef.current = [...historyRef.current, JSON.stringify(boardData)].slice(-20);
@@ -418,7 +426,10 @@ export default function App() {
     try {
       const response = await updateBoard(activeBoardId, {
         title: boardTitle.trim() || "Untitled Board",
-        data: boardData
+        data: {
+          ...boardData,
+          viewport: { pan: { ...pan }, zoom }
+        }
       });
       setActiveBoard(response.board);
       setBoards((prev) =>
