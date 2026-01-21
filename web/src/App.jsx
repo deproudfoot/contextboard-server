@@ -506,6 +506,13 @@ export default function App() {
   }
 
   function handleHexDoubleClick(event, hex) {
+    if (hex.content?.type === "hypertext" && typeof hex.content.value === "string") {
+      const match = hex.content.value.match(/https?:\/\/\S+/);
+      if (match) {
+        window.open(match[0], "_blank", "noopener,noreferrer");
+        return;
+      }
+    }
     if (!event.target?.classList?.contains("hex-text-label")) {
       return;
     }
