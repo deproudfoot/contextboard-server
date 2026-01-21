@@ -9,7 +9,14 @@ import {
   createBoard,
   getBoard,
   updateBoard,
-  deleteBoard
+  deleteBoard,
+  listShares,
+  createShare,
+  deleteShare,
+  listCollaborators,
+  addCollaborator,
+  removeCollaborator,
+  getSharedBoard
 } from "./api";
 
 function Field({ label, ...props }) {
@@ -50,8 +57,12 @@ export default function App() {
   const [boards, setBoards] = useState([]);
   const [activeBoardId, setActiveBoardId] = useState(null);
   const [activeBoard, setActiveBoard] = useState(null);
+  const [activeBoardRole, setActiveBoardRole] = useState("owner");
+  const [activeBoardOwnerEmail, setActiveBoardOwnerEmail] = useState(null);
   const [boardTitle, setBoardTitle] = useState("");
   const [boardData, setBoardData] = useState({ hexagons: [] });
+  const [sharedView, setSharedView] = useState(false);
+  const [sharedRole, setSharedRole] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [dragState, setDragState] = useState(null);
   const [marqueeStart, setMarqueeStart] = useState(null);
@@ -66,6 +77,12 @@ export default function App() {
   const [addColor, setAddColor] = useState(colorOptions[0].color);
   const [lastSelectedId, setLastSelectedId] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showSharePanel, setShowSharePanel] = useState(false);
+  const [shareRole, setShareRole] = useState("view");
+  const [shares, setShares] = useState([]);
+  const [collaborators, setCollaborators] = useState([]);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("editor");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const historyRef = useRef([]);
@@ -105,6 +122,34 @@ export default function App() {
       canceled = true;
     };
   }, [token]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shareToken = params.get("share");
+    if (!shareToken) return;
+    let canceled = false;
+    setBusy(true);
+    getSharedBoard(shareToken)
+      .then((response) => {
+        if (canceled) return;
+        setSharedView(true);
+        setSharedRole(response.role || "view");
+        setActiveBoardId(response.board.id);
+        setBoardTitle(response.board.title || "Shared board");
+        setBoardData(response.board.data || { hexagons: [] });
+        setActiveBoardRole("viewer");
+        setActiveBoardOwnerEmail(null);
+      })
+      .catch((e) => {
+        if (!canceled) setErr(e.message);
+      })
+      .finally(() => {
+        if (!canceled) setBusy(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!user) return;
@@ -147,6 +192,7 @@ export default function App() {
   }, [activeBoardId, token]);
 
   function queueBoardBroadcast(nextData) {
+    if (!canEdit) return;
     if (!activeBoardId) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     const now = Date.now();
@@ -249,6 +295,10 @@ export default function App() {
     setPan({ x: rect.width / 2, y: rect.height / 2 });
   }, [activeBoardId]);
 
+  const canEdit = !sharedView && (activeBoardRole === "owner" || activeBoardRole === "editor");
+  const isReadOnly = !canEdit;
+  const isOwner = activeBoardRole === "owner";
+
   async function handleSubmit(e) {
     e.preventDefault();
     setErr("");
@@ -274,8 +324,23 @@ export default function App() {
     setBoards([]);
     setActiveBoardId(null);
     setActiveBoard(null);
+    setActiveBoardRole("owner");
+    setActiveBoardOwnerEmail(null);
     setEmail("");
     setPassword("");
+    setErr("");
+  }
+
+  function exitSharedView() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("share");
+    window.history.replaceState({}, "", url.toString());
+    setSharedView(false);
+    setSharedRole(null);
+    setActiveBoardId(null);
+    setBoardTitle("");
+    setBoardData({ hexagons: [] });
+    setShowSharePanel(false);
     setErr("");
   }
 
@@ -295,11 +360,16 @@ export default function App() {
   async function openBoard(id) {
     setErr("");
     setActiveBoardId(id);
+    setSharedView(false);
+    setSharedRole(null);
+    setShowSharePanel(false);
     try {
       const response = await getBoard(id);
       const board = response.board;
       setActiveBoard(board);
       setBoardTitle(board.title || "");
+      setActiveBoardRole(board.accessRole || "owner");
+      setActiveBoardOwnerEmail(board.ownerEmail || null);
       const data = board.data ?? { hexagons: [] };
       setBoardData(data);
       setSelectedIds(new Set());
@@ -342,6 +412,7 @@ export default function App() {
   }
 
   async function handleSaveBoard() {
+    if (!canEdit) return;
     if (!activeBoardId) return;
     setErr("");
     try {
@@ -351,10 +422,97 @@ export default function App() {
       });
       setActiveBoard(response.board);
       setBoards((prev) =>
-        prev.map((item) => (item.id === response.board.id ? response.board : item))
+        prev.map((item) =>
+          item.id === response.board.id
+            ? {
+                ...item,
+                ...response.board,
+                accessRole: item.accessRole,
+                ownerEmail: item.ownerEmail
+              }
+            : item
+        )
       );
     } catch (e) {
       setErr(e.message || "Failed to save board");
+    }
+  }
+
+  async function refreshSharing() {
+    if (!activeBoardId || !isOwner) return;
+    try {
+      const [sharesResponse, collaboratorsResponse] = await Promise.all([
+        listShares(activeBoardId),
+        listCollaborators(activeBoardId)
+      ]);
+      setShares(sharesResponse.shares || []);
+      setCollaborators(collaboratorsResponse.collaborators || []);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  useEffect(() => {
+    if (!showSharePanel) return;
+    refreshSharing();
+  }, [showSharePanel, activeBoardId, isOwner]);
+
+  async function handleCreateShare() {
+    if (!activeBoardId || !isOwner) return;
+    setErr("");
+    try {
+      await createShare(activeBoardId, shareRole);
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function handleDeleteShare(shareId) {
+    if (!activeBoardId || !isOwner) return;
+    setErr("");
+    try {
+      await deleteShare(activeBoardId, shareId);
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function handleAddCollaborator() {
+    if (!activeBoardId || !isOwner) return;
+    const emailValue = inviteEmail.trim();
+    if (!emailValue) return;
+    setErr("");
+    try {
+      await addCollaborator(activeBoardId, { email: emailValue, role: inviteRole });
+      setInviteEmail("");
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function handleRemoveCollaborator(collaboratorId) {
+    if (!activeBoardId || !isOwner) return;
+    setErr("");
+    try {
+      await removeCollaborator(activeBoardId, collaboratorId);
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  function buildShareUrl(token) {
+    return `${window.location.origin}/?share=${token}`;
+  }
+
+  async function handleCopyShare(token) {
+    try {
+      await navigator.clipboard.writeText(buildShareUrl(token));
+    } catch {
+      setErr("Unable to copy share link.");
     }
   }
 
@@ -416,7 +574,7 @@ export default function App() {
   }
 
   function handleCanvasPointerUp() {
-    if (dragState) {
+    if (dragState && canEdit) {
       const hexSize = hexRadius * 2;
       const snapDistance = hexSize * snapRatio;
       const snapDistanceSquared = snapDistance * snapDistance;
@@ -441,6 +599,7 @@ export default function App() {
   }
 
   function handleAddHexagon(count = addCount, color = addColor) {
+    if (!canEdit) return;
     const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
     const svg = canvasRef.current;
     const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
@@ -470,6 +629,7 @@ export default function App() {
   }
 
   function handleLabelChange(value) {
+    if (!canEdit) return;
     pushHistory({
       ...boardData,
       hexagons: (boardData.hexagons || []).map((hex) =>
@@ -479,6 +639,7 @@ export default function App() {
   }
 
   function handleColorChange(value) {
+    if (!canEdit) return;
     pushHistory({
       ...boardData,
       hexagons: (boardData.hexagons || []).map((hex) =>
@@ -488,6 +649,7 @@ export default function App() {
   }
 
   function handleMediaChange(file, forcedType) {
+    if (!canEdit) return;
     if (!file) return;
     const targetId = pendingMediaRef.current.id || Array.from(selectedIds)[0];
     if (!targetId) return;
@@ -519,6 +681,11 @@ export default function App() {
   }
 
   function handleHexPointerDown(event, hexId) {
+    if (isReadOnly) {
+      setSelectedIds(new Set([hexId]));
+      setLastSelectedId(hexId);
+      return;
+    }
     const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
     const localX = rect ? (event.clientX - rect.left - pan.x) / zoom : event.clientX;
     const localY = rect ? (event.clientY - rect.top - pan.y) / zoom : event.clientY;
@@ -574,12 +741,14 @@ export default function App() {
   }
 
   function openContextMenu(event, hexId) {
+    if (!canEdit) return;
     event.preventDefault();
     setSelectedIds(new Set([hexId]));
     setContextMenu({ x: event.clientX, y: event.clientY, targetId: hexId });
   }
 
   function setHexContent(id, content) {
+    if (!canEdit) return;
     pushHistory({
       ...boardData,
       hexagons: (boardData.hexagons || []).map((hex) =>
@@ -589,6 +758,7 @@ export default function App() {
   }
 
   function handleEditText(id, asHypertext) {
+    if (!canEdit) return;
     const hex = (boardData.hexagons || []).find((item) => item.id === id);
     const current =
       hex?.content?.type === "text" || hex?.content?.type === "hypertext"
@@ -624,6 +794,7 @@ export default function App() {
       }
       return;
     }
+    if (!canEdit) return;
     handleEditText(hex.id, hex.content?.type === "hypertext");
   }
 
@@ -771,6 +942,7 @@ export default function App() {
   }
 
   function handleDeleteSelected() {
+    if (!canEdit) return;
     if (selectedIds.size === 0) return;
     pushHistory({
       ...boardData,
@@ -785,6 +957,7 @@ export default function App() {
   }
 
   function handleDisconnectSelected() {
+    if (!canEdit) return;
     if (selectedIds.size === 0) return;
     let next = boardData.hexagons || [];
     selectedIds.forEach((id) => {
@@ -814,6 +987,7 @@ export default function App() {
   }
 
   function handleDuplicateSelected() {
+    if (!canEdit) return;
     if (selectedIds.size === 0) return;
     const selected = (boardData.hexagons || []).filter((hex) => selectedIds.has(hex.id));
     const clones = selected.map((hex) => ({
@@ -840,45 +1014,68 @@ export default function App() {
     }
   }
 
-  if (user && activeBoardId) {
+  if (activeBoardId && (user || sharedView)) {
     const selected = (boardData.hexagons || []).find((hex) => selectedIds.has(hex.id));
     const connections = buildConnections(boardData.hexagons || []);
     return (
       <div className="board-shell">
         <div className="board-topbar">
-          <Button onClick={() => setActiveBoardId(null)}>Back</Button>
+          <Button onClick={() => (sharedView ? exitSharedView() : setActiveBoardId(null))}>
+            Back
+          </Button>
           <div className="board-title">
             <input
               className="title-input"
               value={boardTitle}
               onChange={(e) => setBoardTitle(e.target.value)}
+              readOnly={isReadOnly}
             />
           </div>
+          {activeBoardRole !== "owner" ? (
+            <span className="role-badge">
+              {sharedView ? `Shared (${sharedRole || "view"})` : `${activeBoardRole} access`}
+            </span>
+          ) : null}
           <div className="spacer" />
-          <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
-            💾
-          </button>
-          <button
-            className="icon-button"
-            onClick={undo}
-            disabled={historyRef.current.length === 0}
-            aria-label="Undo"
-          >
-            ↺
-          </button>
-          <button
-            className="icon-button"
-            onClick={redo}
-            disabled={redoRef.current.length === 0}
-            aria-label="Redo"
-          >
-            ↻
-          </button>
+          {canEdit ? (
+            <>
+              <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
+                💾
+              </button>
+              <button
+                className="icon-button"
+                onClick={undo}
+                disabled={historyRef.current.length === 0}
+                aria-label="Undo"
+              >
+                ↺
+              </button>
+              <button
+                className="icon-button"
+                onClick={redo}
+                disabled={redoRef.current.length === 0}
+                aria-label="Redo"
+              >
+                ↻
+              </button>
+            </>
+          ) : (
+            <span className="role-badge">Read only</span>
+          )}
           {err ? <span className="board-error">{err}</span> : null}
+          {isOwner && !sharedView ? (
+            <button
+              className="icon-button"
+              onClick={() => setShowSharePanel((prev) => !prev)}
+              aria-label="Share"
+            >
+              🔗
+            </button>
+          ) : null}
           <button className="icon-button" onClick={() => setShowSettings((prev) => !prev)}>
             ⚙️
           </button>
-          <Button onClick={logout}>Log out</Button>
+          {user ? <Button onClick={logout}>Log out</Button> : null}
         </div>
         <div className="zoom-rail">
           <input
@@ -923,6 +1120,84 @@ export default function App() {
                 onChange={(e) => setDisconnectVelocityThreshold(Number(e.target.value))}
               />
             </label>
+          </div>
+        ) : null}
+        {showSharePanel && isOwner ? (
+          <div className="share-panel">
+            <div className="panel-section">
+              <div className="panel-title">Share link</div>
+              <div className="panel-row">
+                <select value={shareRole} onChange={(e) => setShareRole(e.target.value)}>
+                  <option value="view">View</option>
+                  <option value="comment">Comment</option>
+                </select>
+                <Button onClick={handleCreateShare}>Create</Button>
+              </div>
+              {shares.length === 0 ? (
+                <div className="muted small">No active share links.</div>
+              ) : (
+                <div className="panel-list">
+                  {shares.map((share) => (
+                    <div key={share.id} className="panel-item">
+                      <div className="panel-item-title">
+                        {share.role} link
+                      </div>
+                      <div className="panel-item-link">{buildShareUrl(share.token)}</div>
+                      <div className="panel-row">
+                        <Button onClick={() => handleCopyShare(share.token)}>Copy</Button>
+                        <button
+                          className="link-button"
+                          type="button"
+                          onClick={() => handleDeleteShare(share.id)}
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="panel-section">
+              <div className="panel-title">Invite collaborator</div>
+              <label className="field inline-field">
+                <div className="field-label">Email</div>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="name@example.com"
+                />
+              </label>
+              <div className="panel-row">
+                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                  <option value="editor">Editor</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+                <Button onClick={handleAddCollaborator}>Invite</Button>
+              </div>
+              {collaborators.length === 0 ? (
+                <div className="muted small">No collaborators yet.</div>
+              ) : (
+                <div className="panel-list">
+                  {collaborators.map((collab) => (
+                    <div key={collab.id} className="panel-row panel-item">
+                      <div>
+                        <div className="panel-item-title">{collab.email}</div>
+                        <div className="muted small">{collab.role}</div>
+                      </div>
+                      <button
+                        className="link-button"
+                        type="button"
+                        onClick={() => handleRemoveCollaborator(collab.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         ) : null}
         <div className="snap-indicator">
@@ -1099,10 +1374,16 @@ export default function App() {
             )})}
           </g>
         </svg>
-        <button className="fab" onClick={() => setShowAddMenu((prev) => !prev)} aria-label="Add hexagon">
-          +
-        </button>
-        {showAddMenu ? (
+        {canEdit ? (
+          <button
+            className="fab"
+            onClick={() => setShowAddMenu((prev) => !prev)}
+            aria-label="Add hexagon"
+          >
+            +
+          </button>
+        ) : null}
+        {canEdit && showAddMenu ? (
           <div className="add-menu">
             <div className="menu-section">Pick a color</div>
             <div className="color-row">
@@ -1130,7 +1411,7 @@ export default function App() {
             <Button onClick={() => handleAddHexagon(addCount, addColor)}>Add</Button>
           </div>
         ) : null}
-        {contextMenu ? (
+        {canEdit && contextMenu ? (
           <div
             className="context-menu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -1190,27 +1471,31 @@ export default function App() {
             </button>
           </div>
         ) : null}
-        <input
-          ref={imageInputRef}
-          type="file"
-          accept="image/*"
-          style={{ display: "none" }}
-          onChange={(e) => handleMediaChange(e.target.files?.[0], "image")}
-        />
-        <input
-          ref={videoInputRef}
-          type="file"
-          accept="video/*"
-          style={{ display: "none" }}
-          onChange={(e) => handleMediaChange(e.target.files?.[0], "video")}
-        />
-        <input
-          ref={audioInputRef}
-          type="file"
-          accept="audio/*"
-          style={{ display: "none" }}
-          onChange={(e) => handleMediaChange(e.target.files?.[0], "audio")}
-        />
+        {canEdit ? (
+          <>
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "image")}
+            />
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept="video/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "video")}
+            />
+            <input
+              ref={audioInputRef}
+              type="file"
+              accept="audio/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "audio")}
+            />
+          </>
+        ) : null}
       </div>
     );
   }
@@ -1239,6 +1524,11 @@ export default function App() {
                 <div className="muted">
                   Updated {board.updatedAt ? new Date(board.updatedAt).toLocaleString() : "—"}
                 </div>
+                {board.accessRole && board.accessRole !== "owner" ? (
+                  <div className="muted small">
+                    Shared by {board.ownerEmail || "Unknown"} · {board.accessRole}
+                  </div>
+                ) : null}
               </button>
               <button className="button" onClick={() => handleDeleteBoard(board.id)}>
                 Delete

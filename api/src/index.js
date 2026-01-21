@@ -5,6 +5,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
 import http from "http";
 import { WebSocketServer } from "ws";
+import crypto from "crypto";
 import { PrismaClient } from "@prisma/client";
 
 dotenv.config();
@@ -48,6 +49,34 @@ function isInvited(email) {
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
   return allowlist.includes(email.toLowerCase());
+}
+
+function isEditor(role) {
+  return role === "owner" || role === "editor";
+}
+
+async function getBoardForUser(boardId, userId) {
+  return prisma.board.findFirst({
+    where: {
+      id: boardId,
+      OR: [{ ownerId: userId }, { collaborators: { some: { userId } } }]
+    },
+    include: {
+      collaborators: {
+        where: { userId },
+        select: { role: true }
+      },
+      owner: {
+        select: { id: true, email: true }
+      }
+    }
+  });
+}
+
+function getAccessRole(board, userId) {
+  if (!board) return null;
+  if (board.ownerId === userId) return "owner";
+  return board.collaborators?.[0]?.role || "viewer";
 }
 
 app.get("/health", (_req, res) => {
@@ -100,10 +129,37 @@ app.get("/me", authMiddleware, async (req, res) => {
 });
 
 app.get("/boards", authMiddleware, async (req, res) => {
-  const boards = await prisma.board.findMany({
+  const owned = await prisma.board.findMany({
     where: { ownerId: req.userId },
     orderBy: { updatedAt: "desc" },
     select: { id: true, title: true, updatedAt: true, createdAt: true }
+  });
+  const shared = await prisma.board.findMany({
+    where: { collaborators: { some: { userId: req.userId } } },
+    orderBy: { updatedAt: "desc" },
+    include: {
+      owner: { select: { email: true } },
+      collaborators: {
+        where: { userId: req.userId },
+        select: { role: true }
+      }
+    }
+  });
+  const sharedItems = shared.map((board) => ({
+    id: board.id,
+    title: board.title,
+    updatedAt: board.updatedAt,
+    createdAt: board.createdAt,
+    accessRole: board.collaborators?.[0]?.role || "viewer",
+    ownerEmail: board.owner?.email || "Unknown"
+  }));
+  const ownedItems = owned.map((board) => ({
+    ...board,
+    accessRole: "owner",
+    ownerEmail: null
+  }));
+  const boards = [...ownedItems, ...sharedItems].sort((a, b) => {
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
   return res.json({ boards });
 });
@@ -121,22 +177,33 @@ app.post("/boards", authMiddleware, async (req, res) => {
 });
 
 app.get("/boards/:id", authMiddleware, async (req, res) => {
-  const board = await prisma.board.findFirst({
-    where: { id: req.params.id, ownerId: req.userId }
-  });
+  const board = await getBoardForUser(req.params.id, req.userId);
   if (!board) {
     return res.status(404).json({ error: "Board not found" });
   }
-  return res.json({ board });
+  return res.json({
+    board: {
+      id: board.id,
+      ownerId: board.ownerId,
+      title: board.title,
+      data: board.data,
+      createdAt: board.createdAt,
+      updatedAt: board.updatedAt,
+      accessRole: getAccessRole(board, req.userId),
+      ownerEmail: board.owner?.email || null
+    }
+  });
 });
 
 app.put("/boards/:id", authMiddleware, async (req, res) => {
   const { title, data } = req.body ?? {};
-  const board = await prisma.board.findFirst({
-    where: { id: req.params.id, ownerId: req.userId }
-  });
+  const board = await getBoardForUser(req.params.id, req.userId);
   if (!board) {
     return res.status(404).json({ error: "Board not found" });
+  }
+  const role = getAccessRole(board, req.userId);
+  if (!isEditor(role)) {
+    return res.status(403).json({ error: "Read-only access" });
   }
   const updated = await prisma.board.update({
     where: { id: board.id },
@@ -157,6 +224,133 @@ app.delete("/boards/:id", authMiddleware, async (req, res) => {
   }
   await prisma.board.delete({ where: { id: board.id } });
   return res.json({ ok: true });
+});
+
+app.post("/boards/:id/collaborators", authMiddleware, async (req, res) => {
+  const { email, role } = req.body ?? {};
+  if (!email || !role) {
+    return res.status(400).json({ error: "Email and role are required" });
+  }
+  if (!["editor", "viewer"].includes(role)) {
+    return res.status(400).json({ error: "Invalid role" });
+  }
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  const collaborator = await prisma.boardCollaborator.upsert({
+    where: { boardId_userId: { boardId: board.id, userId: user.id } },
+    update: { role },
+    create: { boardId: board.id, userId: user.id, role }
+  });
+  return res.status(201).json({ collaborator });
+});
+
+app.get("/boards/:id/collaborators", authMiddleware, async (req, res) => {
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  const collaborators = await prisma.boardCollaborator.findMany({
+    where: { boardId: board.id },
+    include: { user: { select: { email: true } } }
+  });
+  return res.json({
+    collaborators: collaborators.map((item) => ({
+      id: item.id,
+      email: item.user.email,
+      role: item.role,
+      createdAt: item.createdAt
+    }))
+  });
+});
+
+app.delete("/boards/:id/collaborators/:collaboratorId", authMiddleware, async (req, res) => {
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  await prisma.boardCollaborator.deleteMany({
+    where: { id: req.params.collaboratorId, boardId: board.id }
+  });
+  return res.json({ ok: true });
+});
+
+app.post("/boards/:id/shares", authMiddleware, async (req, res) => {
+  const { role } = req.body ?? {};
+  if (!role || !["view", "comment"].includes(role)) {
+    return res.status(400).json({ error: "Invalid role" });
+  }
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  const share = await prisma.boardShare.create({
+    data: {
+      boardId: board.id,
+      role,
+      token: crypto.randomUUID()
+    }
+  });
+  return res.status(201).json({ share });
+});
+
+app.get("/boards/:id/shares", authMiddleware, async (req, res) => {
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  const shares = await prisma.boardShare.findMany({
+    where: { boardId: board.id },
+    orderBy: { createdAt: "desc" }
+  });
+  return res.json({ shares });
+});
+
+app.delete("/boards/:id/shares/:shareId", authMiddleware, async (req, res) => {
+  const board = await prisma.board.findFirst({
+    where: { id: req.params.id, ownerId: req.userId }
+  });
+  if (!board) {
+    return res.status(404).json({ error: "Board not found" });
+  }
+  await prisma.boardShare.deleteMany({
+    where: { id: req.params.shareId, boardId: board.id }
+  });
+  return res.json({ ok: true });
+});
+
+app.get("/share/:token", async (req, res) => {
+  const share = await prisma.boardShare.findUnique({
+    where: { token: req.params.token },
+    include: { board: true }
+  });
+  if (!share) {
+    return res.status(404).json({ error: "Share link not found" });
+  }
+  return res.json({
+    role: share.role,
+    board: {
+      id: share.board.id,
+      title: share.board.title,
+      data: share.board.data,
+      updatedAt: share.board.updatedAt
+    }
+  });
 });
 
 const server = http.createServer(app);
@@ -190,15 +384,14 @@ wss.on("connection", async (socket, req) => {
       return;
     }
     const payload = jwt.verify(token, jwtSecret);
-    const board = await prisma.board.findFirst({
-      where: { id: boardId, ownerId: payload.sub }
-    });
+    const board = await getBoardForUser(boardId, payload.sub);
     if (!board) {
       socket.close(1008, "Unauthorized");
       return;
     }
     socket.boardId = boardId;
     socket.userId = payload.sub;
+    socket.accessRole = getAccessRole(board, payload.sub);
     addToRoom(boardId, socket);
     socket.on("message", (data) => {
       let message;
@@ -209,6 +402,9 @@ wss.on("connection", async (socket, req) => {
       }
       if (!message) return;
       if (message.type === "board_update") {
+        if (!isEditor(socket.accessRole)) {
+          return;
+        }
         const payload = JSON.stringify({
           type: "board_update",
           boardId,

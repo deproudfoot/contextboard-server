@@ -13,7 +13,8 @@ model User {
   password  String
   createdAt DateTime @default(now())
 
-  boards Board[]
+  boards         Board[]
+  collaborations BoardCollaborator[]
 }
 
 model Board {
@@ -24,7 +25,36 @@ model Board {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  owner User @relation(fields: [ownerId], references: [id])
+  owner         User                @relation(fields: [ownerId], references: [id])
+  collaborators BoardCollaborator[]
+  shares        BoardShare[]
 
   @@index([ownerId])
+}
+
+model BoardCollaborator {
+  id        String   @id @default(cuid())
+  boardId   String
+  userId    String
+  role      String
+  createdAt DateTime @default(now())
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
+  @@index([boardId])
+  @@index([userId])
+}
+
+model BoardShare {
+  id        String   @id @default(cuid())
+  boardId   String
+  token     String   @unique
+  role      String
+  createdAt DateTime @default(now())
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+
+  @@index([boardId])
 }

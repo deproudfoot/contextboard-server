@@ -33,6 +33,31 @@ async function request(path, options = {}) {
   return data;
 }
 
+async function requestPublic(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    },
+    ...options
+  });
+
+  const text = await response.text();
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = {};
+    }
+  }
+  if (!response.ok) {
+    const message = data.error || text || response.statusText;
+    throw new Error(message);
+  }
+  return data;
+}
+
 const TOKEN_KEY = "contextboard_token";
 
 export function setToken(token) {
@@ -91,4 +116,42 @@ export function deleteBoard(id) {
   return request(`/boards/${id}`, {
     method: "DELETE"
   });
+}
+
+export function listShares(boardId) {
+  return request(`/boards/${boardId}/shares`);
+}
+
+export function createShare(boardId, role) {
+  return request(`/boards/${boardId}/shares`, {
+    method: "POST",
+    body: JSON.stringify({ role })
+  });
+}
+
+export function deleteShare(boardId, shareId) {
+  return request(`/boards/${boardId}/shares/${shareId}`, {
+    method: "DELETE"
+  });
+}
+
+export function listCollaborators(boardId) {
+  return request(`/boards/${boardId}/collaborators`);
+}
+
+export function addCollaborator(boardId, payload) {
+  return request(`/boards/${boardId}/collaborators`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function removeCollaborator(boardId, collaboratorId) {
+  return request(`/boards/${boardId}/collaborators/${collaboratorId}`, {
+    method: "DELETE"
+  });
+}
+
+export function getSharedBoard(token) {
+  return requestPublic(`/share/${token}`);
 }

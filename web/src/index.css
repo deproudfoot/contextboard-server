@@ -81,6 +81,70 @@ body {
   min-width: 180px;
 }
 
+.share-panel {
+  position: absolute;
+  top: 72px;
+  right: 220px;
+  display: grid;
+  gap: 16px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  z-index: 6;
+  min-width: 280px;
+  max-width: 360px;
+}
+
+.panel-section {
+  display: grid;
+  gap: 10px;
+}
+
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.panel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.panel-list {
+  display: grid;
+  gap: 10px;
+}
+
+.panel-item {
+  background: #f8fafc;
+  border-radius: 10px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+}
+
+.panel-item-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.panel-item-link {
+  font-size: 11px;
+  color: #334155;
+  word-break: break-all;
+  margin: 6px 0;
+}
+
+.role-badge {
+  font-size: 12px;
+  color: #1e293b;
+  background: #e2e8f0;
+  padding: 4px 8px;
+  border-radius: 999px;
+}
+
 .zoom-rail {
   position: absolute;
   top: 120px;
@@ -153,6 +217,14 @@ textarea {
   font-size: 14px;
   font-family: inherit;
   outline: none;
+}
+
+select {
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #cbd5f5;
+  font-size: 13px;
+  font-family: inherit;
 }
 
 input[type="color"] {
