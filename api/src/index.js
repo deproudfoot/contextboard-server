@@ -207,19 +207,37 @@ wss.on("connection", async (socket, req) => {
       } catch {
         return;
       }
-      if (!message || message.type !== "board_update") return;
-      const payload = JSON.stringify({
-        type: "board_update",
-        boardId,
-        data: message.data,
-        sender: message.sender
-      });
-      const room = rooms.get(boardId) || new Set();
-      room.forEach((client) => {
-        if (client !== socket && client.readyState === client.OPEN) {
-          client.send(payload);
-        }
-      });
+      if (!message) return;
+      if (message.type === "board_update") {
+        const payload = JSON.stringify({
+          type: "board_update",
+          boardId,
+          data: message.data,
+          sender: message.sender
+        });
+        const room = rooms.get(boardId) || new Set();
+        room.forEach((client) => {
+          if (client !== socket && client.readyState === client.OPEN) {
+            client.send(payload);
+          }
+        });
+        return;
+      }
+      if (message.type === "presence") {
+        const payload = JSON.stringify({
+          type: "presence",
+          boardId,
+          sender: message.sender,
+          cursor: message.cursor,
+          label: message.label
+        });
+        const room = rooms.get(boardId) || new Set();
+        room.forEach((client) => {
+          if (client !== socket && client.readyState === client.OPEN) {
+            client.send(payload);
+          }
+        });
+      }
     });
     socket.on("close", () => {
       removeFromRoom(boardId, socket);

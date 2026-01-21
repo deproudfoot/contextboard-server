@@ -78,6 +78,8 @@ export default function App() {
   const wsRef = useRef(null);
   const wsSendTimer = useRef(null);
   const clientId = useRef(crypto.randomUUID());
+  const [presence, setPresence] = useState({});
+  const presenceTimer = useRef(null);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -119,9 +121,18 @@ export default function App() {
     socket.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        if (message.type !== "board_update") return;
-        if (message.sender === clientId.current) return;
-        setBoardData(message.data);
+        if (message.type === "board_update") {
+          if (message.sender === clientId.current) return;
+          setBoardData(message.data);
+          return;
+        }
+        if (message.type === "presence") {
+          if (message.sender === clientId.current) return;
+          setPresence((prev) => ({
+            ...prev,
+            [message.sender]: { cursor: message.cursor, label: message.label }
+          }));
+        }
       } catch {
         // ignore
       }
@@ -150,6 +161,24 @@ export default function App() {
       );
     }, 200);
   }, [boardData, activeBoardId]);
+
+  function sendPresence(point) {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (presenceTimer.current) {
+      clearTimeout(presenceTimer.current);
+    }
+    presenceTimer.current = window.setTimeout(() => {
+      wsRef.current?.send(
+        JSON.stringify({
+          type: "presence",
+          boardId: activeBoardId,
+          cursor: point,
+          sender: clientId.current,
+          label: user?.email ? user.email.split("@")[0] : "Guest"
+        })
+      );
+    }, 60);
+  }
 
   useEffect(() => {
     if (!user?.id) return;
@@ -881,6 +910,12 @@ export default function App() {
           onPointerMove={(event) => {
             handleCanvasPointerMove(event);
             handleCanvasPointerMoveMarquee(event);
+            const rect = event.currentTarget.getBoundingClientRect();
+            const cursor = {
+              x: (event.clientX - rect.left - pan.x) / zoom,
+              y: (event.clientY - rect.top - pan.y) / zoom
+            };
+            sendPresence(cursor);
           }}
           onPointerUp={handleCanvasPointerUp}
         >
@@ -908,6 +943,14 @@ export default function App() {
                 strokeWidth="1"
               />
             ) : null}
+            {Object.entries(presence).map(([id, data]) => (
+              <g key={id} transform={`translate(${data.cursor.x || 0} ${data.cursor.y || 0})`}>
+                <circle r="6" fill="#38bdf8" />
+                <text x="10" y="4" fontSize="10" fill="#0f172a">
+                  {data.label || "User"}
+                </text>
+              </g>
+            ))}
             {(boardData.hexagons || []).map((hex) => {
               const clipId = `clip-${hex.id}`;
               const gradientId = `grad-${hex.id}`;
