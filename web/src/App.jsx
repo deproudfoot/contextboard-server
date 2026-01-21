@@ -39,7 +39,7 @@ function Button({ children, ...props }) {
 export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
-  const [snapRatio, setSnapRatio] = useState(0.82);
+  const [snapRatio, setSnapRatio] = useState(0.94);
   const [disconnectVelocityThreshold, setDisconnectVelocityThreshold] = useState(60);
   const colorOptions = [
     { name: "Red", color: "#f23f3f" },
