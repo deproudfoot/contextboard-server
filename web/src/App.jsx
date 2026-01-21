@@ -77,6 +77,8 @@ export default function App() {
   const pendingMediaRef = useRef({ id: null, type: null });
   const wsRef = useRef(null);
   const wsSendTimer = useRef(null);
+  const lastSendRef = useRef(0);
+  const suppressBroadcastRef = useRef(false);
   const clientId = useRef(crypto.randomUUID());
   const [presence, setPresence] = useState({});
   const presenceTimer = useRef(null);
@@ -123,6 +125,7 @@ export default function App() {
         const message = JSON.parse(event.data);
         if (message.type === "board_update") {
           if (message.sender === clientId.current) return;
+          suppressBroadcastRef.current = true;
           setBoardData(message.data);
           return;
         }
@@ -143,23 +146,45 @@ export default function App() {
     };
   }, [activeBoardId, token]);
 
-  useEffect(() => {
+  function queueBoardBroadcast(nextData) {
     if (!activeBoardId) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    if (wsSendTimer.current) {
-      clearTimeout(wsSendTimer.current);
-    }
-    wsSendTimer.current = window.setTimeout(() => {
+    const now = Date.now();
+    const elapsed = now - lastSendRef.current;
+    const sendNow = elapsed >= 90;
+
+    const send = () => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
       wsRef.current.send(
         JSON.stringify({
           type: "board_update",
           boardId: activeBoardId,
-          data: boardData,
+          data: nextData,
           sender: clientId.current
         })
       );
-    }, 200);
+      lastSendRef.current = Date.now();
+    };
+
+    if (sendNow) {
+      send();
+      return;
+    }
+
+    if (wsSendTimer.current) {
+      clearTimeout(wsSendTimer.current);
+    }
+    wsSendTimer.current = window.setTimeout(() => {
+      send();
+    }, 90 - elapsed);
+  }
+
+  useEffect(() => {
+    if (suppressBroadcastRef.current) {
+      suppressBroadcastRef.current = false;
+      return;
+    }
+    queueBoardBroadcast(boardData);
   }, [boardData, activeBoardId]);
 
   function sendPresence(point) {
