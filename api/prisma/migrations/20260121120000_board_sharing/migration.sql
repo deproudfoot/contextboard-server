@@ -1,6 +1,6 @@
 -- Create collaborators table
 CREATE TABLE "BoardCollaborator" (
-    "id" TEXT NOT NULL DEFAULT cuid(),
+    "id" TEXT NOT NULL,
     "boardId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "role" TEXT NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE "BoardCollaborator" (
 
 -- Create share links table
 CREATE TABLE "BoardShare" (
-    "id" TEXT NOT NULL DEFAULT cuid(),
+    "id" TEXT NOT NULL,
     "boardId" TEXT NOT NULL,
     "token" TEXT NOT NULL,
     "role" TEXT NOT NULL,
