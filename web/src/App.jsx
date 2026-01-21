@@ -83,6 +83,7 @@ export default function App() {
   const [collaborators, setCollaborators] = useState([]);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("editor");
+  const pendingViewportRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const historyRef = useRef([]);
@@ -141,6 +142,7 @@ export default function App() {
         applyViewportFromData(data);
         setActiveBoardRole("viewer");
         setActiveBoardOwnerEmail(null);
+        pendingViewportRef.current = true;
       })
       .catch((e) => {
         if (!canceled) setErr(e.message);
@@ -291,12 +293,17 @@ export default function App() {
 
   useEffect(() => {
     if (!activeBoardId) return;
-    if (boardData?.viewport?.pan && typeof boardData.viewport.zoom === "number") return;
+    if (pendingViewportRef.current && applyViewportFromData(boardData)) {
+      pendingViewportRef.current = false;
+      return;
+    }
+    if (boardData?.viewport?.center && typeof boardData.viewport.zoom === "number") return;
     const svg = canvasRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
+    setZoom(0.5);
     setPan({ x: rect.width / 2, y: rect.height / 2 });
-  }, [activeBoardId, boardData?.viewport?.pan, boardData?.viewport?.zoom]);
+  }, [activeBoardId, boardData?.viewport]);
 
   const canEdit = !sharedView && (activeBoardRole === "owner" || activeBoardRole === "editor");
   const isReadOnly = !canEdit;
@@ -378,9 +385,17 @@ export default function App() {
       setSelectedIds(new Set());
       setLastSelectedId(null);
       if (!applyViewportFromData(data)) {
-        setZoom(0.5);
-        setPan({ x: 0, y: 0 });
+        const svg = canvasRef.current;
+        if (svg) {
+          const rect = svg.getBoundingClientRect();
+          setZoom(0.5);
+          setPan({ x: rect.width / 2, y: rect.height / 2 });
+        } else {
+          setZoom(0.5);
+          setPan({ x: 0, y: 0 });
+        }
       }
+      pendingViewportRef.current = true;
       historyRef.current = [];
       redoRef.current = [];
     } catch (e) {
@@ -391,12 +406,37 @@ export default function App() {
   function applyViewportFromData(data) {
     const viewport = data?.viewport;
     if (!viewport || typeof viewport.zoom !== "number") return false;
-    if (!viewport.pan || typeof viewport.pan.x !== "number" || typeof viewport.pan.y !== "number") {
-      return false;
+    const svg = canvasRef.current;
+    if (!svg) return false;
+    const rect = svg.getBoundingClientRect();
+    if (viewport.center && typeof viewport.center.x === "number" && typeof viewport.center.y === "number") {
+      const zoomValue = viewport.zoom;
+      setZoom(zoomValue);
+      setPan({
+        x: rect.width / 2 - viewport.center.x * zoomValue,
+        y: rect.height / 2 - viewport.center.y * zoomValue
+      });
+      return true;
     }
-    setZoom(viewport.zoom);
-    setPan({ x: viewport.pan.x, y: viewport.pan.y });
-    return true;
+    if (viewport.pan && typeof viewport.pan.x === "number" && typeof viewport.pan.y === "number") {
+      setZoom(viewport.zoom);
+      setPan({ x: viewport.pan.x, y: viewport.pan.y });
+      return true;
+    }
+    return false;
+  }
+
+  function buildViewportForSave() {
+    const svg = canvasRef.current;
+    if (!svg) {
+      return { pan: { ...pan }, zoom };
+    }
+    const rect = svg.getBoundingClientRect();
+    const centerWorld = {
+      x: (rect.width / 2 - pan.x) / zoom,
+      y: (rect.height / 2 - pan.y) / zoom
+    };
+    return { center: centerWorld, pan: { ...pan }, zoom };
   }
 
   function pushHistory(nextData) {
@@ -428,7 +468,7 @@ export default function App() {
         title: boardTitle.trim() || "Untitled Board",
         data: {
           ...boardData,
-          viewport: { pan: { ...pan }, zoom }
+          viewport: buildViewportForSave()
         }
       });
       setActiveBoard(response.board);
