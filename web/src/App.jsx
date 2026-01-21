@@ -75,6 +75,9 @@ export default function App() {
   const videoInputRef = useRef(null);
   const audioInputRef = useRef(null);
   const pendingMediaRef = useRef({ id: null, type: null });
+  const wsRef = useRef(null);
+  const wsSendTimer = useRef(null);
+  const clientId = useRef(crypto.randomUUID());
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -105,6 +108,48 @@ export default function App() {
       .then((response) => setBoards(response.boards || []))
       .catch((e) => setErr(e.message));
   }, [user]);
+
+  useEffect(() => {
+    if (!activeBoardId || !token) return;
+    const apiBase = import.meta.env.VITE_API_BASE || "http://localhost:3000";
+    const wsBase = import.meta.env.VITE_WS_BASE || apiBase.replace(/^http/, "ws");
+    const wsUrl = `${wsBase}/ws?boardId=${activeBoardId}&token=${token}`;
+    const socket = new WebSocket(wsUrl);
+    wsRef.current = socket;
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type !== "board_update") return;
+        if (message.sender === clientId.current) return;
+        setBoardData(message.data);
+      } catch {
+        // ignore
+      }
+    };
+    return () => {
+      socket.close();
+      wsRef.current = null;
+    };
+  }, [activeBoardId, token]);
+
+  useEffect(() => {
+    if (!activeBoardId) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (wsSendTimer.current) {
+      clearTimeout(wsSendTimer.current);
+    }
+    wsSendTimer.current = window.setTimeout(() => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      wsRef.current.send(
+        JSON.stringify({
+          type: "board_update",
+          boardId: activeBoardId,
+          data: boardData,
+          sender: clientId.current
+        })
+      );
+    }, 200);
+  }, [boardData, activeBoardId]);
 
   useEffect(() => {
     if (!user?.id) return;

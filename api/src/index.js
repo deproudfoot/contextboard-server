@@ -3,6 +3,8 @@ import cors from "cors";
 import dotenv from "dotenv";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcrypt";
+import http from "http";
+import { WebSocketServer } from "ws";
 import { PrismaClient } from "@prisma/client";
 
 dotenv.config();
@@ -157,7 +159,77 @@ app.delete("/boards/:id", authMiddleware, async (req, res) => {
   return res.json({ ok: true });
 });
 
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: "/ws" });
+
+const rooms = new Map();
+
+function addToRoom(boardId, socket) {
+  if (!rooms.has(boardId)) {
+    rooms.set(boardId, new Set());
+  }
+  rooms.get(boardId).add(socket);
+}
+
+function removeFromRoom(boardId, socket) {
+  if (!rooms.has(boardId)) return;
+  const room = rooms.get(boardId);
+  room.delete(socket);
+  if (room.size === 0) {
+    rooms.delete(boardId);
+  }
+}
+
+wss.on("connection", async (socket, req) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const token = url.searchParams.get("token");
+    const boardId = url.searchParams.get("boardId");
+    if (!token || !boardId) {
+      socket.close(1008, "Missing token or boardId");
+      return;
+    }
+    const payload = jwt.verify(token, jwtSecret);
+    const board = await prisma.board.findFirst({
+      where: { id: boardId, ownerId: payload.sub }
+    });
+    if (!board) {
+      socket.close(1008, "Unauthorized");
+      return;
+    }
+    socket.boardId = boardId;
+    socket.userId = payload.sub;
+    addToRoom(boardId, socket);
+    socket.on("message", (data) => {
+      let message;
+      try {
+        message = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      if (!message || message.type !== "board_update") return;
+      const payload = JSON.stringify({
+        type: "board_update",
+        boardId,
+        data: message.data,
+        sender: message.sender
+      });
+      const room = rooms.get(boardId) || new Set();
+      room.forEach((client) => {
+        if (client !== socket && client.readyState === client.OPEN) {
+          client.send(payload);
+        }
+      });
+    });
+    socket.on("close", () => {
+      removeFromRoom(boardId, socket);
+    });
+  } catch (error) {
+    socket.close(1011, "Server error");
+  }
+});
+
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`API listening on ${port}`);
 });
