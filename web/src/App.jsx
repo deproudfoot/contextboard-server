@@ -16,7 +16,8 @@ import {
   listCollaborators,
   addCollaborator,
   removeCollaborator,
-  getSharedBoard
+  getSharedBoard,
+  addShareComment
 } from "./api";
 
 function Field({ label, ...props }) {
@@ -63,6 +64,7 @@ export default function App() {
   const [boardData, setBoardData] = useState({ hexagons: [] });
   const [sharedView, setSharedView] = useState(false);
   const [sharedRole, setSharedRole] = useState(null);
+  const [shareToken, setShareToken] = useState(null);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [dragState, setDragState] = useState(null);
   const [marqueeStart, setMarqueeStart] = useState(null);
@@ -86,6 +88,10 @@ export default function App() {
   const [collaborators, setCollaborators] = useState([]);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("editor");
+  const [commentMode, setCommentMode] = useState(false);
+  const [commentAuthor, setCommentAuthor] = useState(() => {
+    return localStorage.getItem("contextboard_comment_author") || "";
+  });
   const pendingViewportRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -139,6 +145,7 @@ export default function App() {
         if (canceled) return;
         setSharedView(true);
         setSharedRole(response.role || "view");
+        setShareToken(shareToken);
         setActiveBoardId(response.board.id);
         setBoardTitle(response.board.title || "Shared board");
         const data = response.board.data || { hexagons: [] };
@@ -282,6 +289,10 @@ export default function App() {
   }, [disconnectVelocityThreshold, user?.id]);
 
   useEffect(() => {
+    localStorage.setItem("contextboard_comment_author", commentAuthor);
+  }, [commentAuthor]);
+
+  useEffect(() => {
     function handleKey(event) {
       if (event.key === "Escape") {
         setContextMenu(null);
@@ -313,6 +324,7 @@ export default function App() {
   }, [activeBoardId, boardData?.viewport]);
 
   const canEdit = !sharedView && (activeBoardRole === "owner" || activeBoardRole === "editor");
+  const canComment = sharedView && sharedRole === "comment";
   const isReadOnly = !canEdit;
   const isOwner = activeBoardRole === "owner";
 
@@ -354,6 +366,8 @@ export default function App() {
     window.history.replaceState({}, "", url.toString());
     setSharedView(false);
     setSharedRole(null);
+    setShareToken(null);
+    setCommentMode(false);
     setActiveBoardId(null);
     setBoardTitle("");
     setBoardData({ hexagons: [] });
@@ -493,6 +507,34 @@ export default function App() {
       );
     } catch (e) {
       setErr(e.message || "Failed to save board");
+    }
+  }
+
+  async function addCommentAt(point) {
+    if (!canComment || !shareToken) return;
+    const text = window.prompt("Add a comment");
+    if (!text) return;
+    const payload = {
+      text,
+      x: point.x,
+      y: point.y,
+      author: commentAuthor || "Guest"
+    };
+    setErr("");
+    try {
+      const response = await addShareComment(shareToken, payload);
+      if (response?.data) {
+        setBoardData(response.data);
+      } else {
+        setBoardData((prev) => ({
+          ...prev,
+          comments: [...(prev.comments || []), response.comment]
+        }));
+      }
+    } catch (e) {
+      setErr(e.message || "Failed to add comment");
+    } finally {
+      setCommentMode(false);
     }
   }
 
@@ -956,6 +998,10 @@ export default function App() {
       x: (event.clientX - rect.left - pan.x) / zoom,
       y: (event.clientY - rect.top - pan.y) / zoom
     };
+    if (commentMode && canComment) {
+      addCommentAt(start);
+      return;
+    }
     if (event.shiftKey) {
       setMarqueeStart(start);
       setMarqueeRect({ x: start.x, y: start.y, width: 0, height: 0 });
@@ -1120,6 +1166,23 @@ export default function App() {
           ) : (
             <span className="role-badge">Read only</span>
           )}
+          {canComment ? (
+            <>
+              <input
+                className="comment-name-input"
+                placeholder="Your name"
+                value={commentAuthor}
+                onChange={(e) => setCommentAuthor(e.target.value)}
+              />
+              <button
+                className={`icon-button ${commentMode ? "comment-active" : ""}`}
+                onClick={() => setCommentMode((prev) => !prev)}
+                aria-label="Add comment"
+              >
+                💬
+              </button>
+            </>
+          ) : null}
           {presenceList.length ? (
             <div className="presence-list">
               Online: {presenceList.map((item) => item.label).join(", ")}
@@ -1316,6 +1379,30 @@ export default function App() {
                   </text>
                 </g>
               ))}
+            {(boardData.comments || []).map((comment) => (
+              <g
+                key={comment.id}
+                transform={`translate(${comment.x || 0} ${comment.y || 0})`}
+                pointerEvents="none"
+              >
+                <rect
+                  x="0"
+                  y="0"
+                  width="140"
+                  height="48"
+                  rx="10"
+                  ry="10"
+                  fill="#fef3c7"
+                  stroke="#f59e0b"
+                />
+                <text x="10" y="18" fontSize="10" fill="#92400e">
+                  {comment.author || "Guest"}
+                </text>
+                <text x="10" y="34" fontSize="11" fill="#78350f">
+                  {comment.text || ""}
+                </text>
+              </g>
+            ))}
             {(boardData.hexagons || []).map((hex) => {
               const clipId = `clip-${hex.id}`;
               const gradientId = `grad-${hex.id}`;

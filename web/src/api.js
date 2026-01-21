@@ -155,3 +155,10 @@ export function removeCollaborator(boardId, collaboratorId) {
 export function getSharedBoard(token) {
   return requestPublic(`/share/${token}`);
 }
+
+export function addShareComment(token, payload) {
+  return requestPublic(`/share/${token}/comments`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}

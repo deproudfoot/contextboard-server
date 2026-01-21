@@ -353,6 +353,46 @@ app.get("/share/:token", async (req, res) => {
   });
 });
 
+app.post("/share/:token/comments", async (req, res) => {
+  const { text, x, y, author } = req.body ?? {};
+  if (!text || typeof x !== "number" || typeof y !== "number") {
+    return res.status(400).json({ error: "Text and coordinates are required" });
+  }
+  const share = await prisma.boardShare.findUnique({
+    where: { token: req.params.token },
+    include: { board: true }
+  });
+  if (!share) {
+    return res.status(404).json({ error: "Share link not found" });
+  }
+  if (share.role !== "comment") {
+    return res.status(403).json({ error: "Read-only share link" });
+  }
+  const existing = share.board.data ?? {};
+  const comments = Array.isArray(existing.comments) ? existing.comments : [];
+  const comment = {
+    id: crypto.randomUUID(),
+    text: String(text).slice(0, 280),
+    x,
+    y,
+    author: author ? String(author).slice(0, 64) : "Guest",
+    createdAt: new Date().toISOString()
+  };
+  const nextData = { ...existing, comments: [...comments, comment] };
+  await prisma.board.update({
+    where: { id: share.board.id },
+    data: { data: nextData }
+  });
+  const payload = JSON.stringify({
+    type: "board_update",
+    boardId: share.board.id,
+    data: nextData,
+    sender: `share:${share.token}`
+  });
+  broadcastToRoom(share.board.id, payload, null);
+  return res.status(201).json({ comment, data: nextData });
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 
@@ -406,6 +446,16 @@ function broadcastPresenceState(boardId) {
   });
 }
 
+function broadcastToRoom(boardId, payload, skipSocket) {
+  const room = rooms.get(boardId) || new Set();
+  room.forEach((client) => {
+    if (client === skipSocket) return;
+    if (client.readyState === client.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
 wss.on("connection", async (socket, req) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -447,12 +497,7 @@ wss.on("connection", async (socket, req) => {
           data: message.data,
           sender: message.sender
         });
-        const room = rooms.get(boardId) || new Set();
-        room.forEach((client) => {
-          if (client !== socket && client.readyState === client.OPEN) {
-            client.send(payload);
-          }
-        });
+        broadcastToRoom(boardId, payload, socket);
         return;
       }
       if (message.type === "presence") {
@@ -463,12 +508,7 @@ wss.on("connection", async (socket, req) => {
           cursor: message.cursor,
           label: message.label
         });
-        const room = rooms.get(boardId) || new Set();
-        room.forEach((client) => {
-          if (client !== socket && client.readyState === client.OPEN) {
-            client.send(payload);
-          }
-        });
+        broadcastToRoom(boardId, payload, socket);
       }
     });
     socket.on("close", () => {

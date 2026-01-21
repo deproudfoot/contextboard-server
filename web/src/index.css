@@ -81,6 +81,19 @@ body {
   border-radius: 999px;
 }
 
+.comment-name-input {
+  width: 120px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.comment-active {
+  background: rgba(59, 130, 246, 0.16);
+  border-radius: 8px;
+}
+
 .settings-panel {
   position: absolute;
   top: 72px;
