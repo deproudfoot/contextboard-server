@@ -68,7 +68,10 @@ export default function App() {
   const [marqueeStart, setMarqueeStart] = useState(null);
   const [marqueeRect, setMarqueeRect] = useState(null);
   const [showNumbers, setShowNumbers] = useState(true);
-  const [zoom, setZoom] = useState(0.5);
+  const zoomMin = 0.2;
+  const zoomMax = 6.25;
+  const zoomMid = (zoomMin + zoomMax) / 2;
+  const [zoom, setZoom] = useState(zoomMid);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [panState, setPanState] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
@@ -301,7 +304,7 @@ export default function App() {
     const svg = canvasRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
-    setZoom(0.5);
+    setZoom(zoomMid);
     setPan({ x: rect.width / 2, y: rect.height / 2 });
   }, [activeBoardId, boardData?.viewport]);
 
@@ -388,10 +391,10 @@ export default function App() {
         const svg = canvasRef.current;
         if (svg) {
           const rect = svg.getBoundingClientRect();
-          setZoom(0.5);
+          setZoom(zoomMid);
           setPan({ x: rect.width / 2, y: rect.height / 2 });
         } else {
-          setZoom(0.5);
+          setZoom(zoomMid);
           setPan({ x: 0, y: 0 });
         }
       }
@@ -409,7 +412,7 @@ export default function App() {
     const svg = canvasRef.current;
     if (!svg) return false;
     const rect = svg.getBoundingClientRect();
-    const zoomValue = 0.5;
+    const zoomValue = zoomMid;
     if (viewport.center && typeof viewport.center.x === "number" && typeof viewport.center.y === "number") {
       setZoom(zoomValue);
       setPan({
@@ -1132,8 +1135,8 @@ export default function App() {
           <input
             className="zoom-slider"
             type="range"
-            min="0.2"
-            max="6.25"
+            min={zoomMin}
+            max={zoomMax}
             step="0.05"
             value={zoom}
             onChange={(e) => setZoomWithCenter(Number(e.target.value))}
