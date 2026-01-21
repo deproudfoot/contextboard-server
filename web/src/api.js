@@ -162,3 +162,10 @@ export function addShareComment(token, payload) {
     body: JSON.stringify(payload)
   });
 }
+
+export function createUpload(payload) {
+  return request("/uploads", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}

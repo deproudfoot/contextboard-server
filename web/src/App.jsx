@@ -17,7 +17,8 @@ import {
   addCollaborator,
   removeCollaborator,
   getSharedBoard,
-  addShareComment
+  addShareComment,
+  createUpload
 } from "./api";
 
 function Field({ label, ...props }) {
@@ -753,31 +754,45 @@ export default function App() {
     if (!file) return;
     const targetId = pendingMediaRef.current.id || Array.from(selectedIds)[0];
     if (!targetId) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result;
-      if (!dataUrl || typeof dataUrl !== "string") return;
-      const type = forcedType
-        ? forcedType
-        : file.type.startsWith("image/")
-        ? "image"
-        : file.type.startsWith("video/")
-        ? "video"
-        : file.type.startsWith("audio/")
-        ? "audio"
-        : file.type === "application/pdf"
-        ? "pdf"
-        : "file";
-      const payload = { type, dataUrl, name: file.name };
-      pushHistory({
-        ...boardData,
-        hexagons: (boardData.hexagons || []).map((hex) =>
-          hex.id === targetId ? { ...hex, content: payload } : hex
-        )
-      });
-      pendingMediaRef.current = { id: null, type: null };
-    };
-    reader.readAsDataURL(file);
+    (async () => {
+      try {
+        const type = forcedType
+          ? forcedType
+          : file.type.startsWith("image/")
+          ? "image"
+          : file.type.startsWith("video/")
+          ? "video"
+          : file.type.startsWith("audio/")
+          ? "audio"
+          : file.type === "application/pdf"
+          ? "pdf"
+          : "file";
+        const contentType = file.type || "application/octet-stream";
+        const upload = await createUpload({ filename: file.name, contentType });
+        if (!upload?.uploadUrl || !upload?.publicUrl) {
+          throw new Error("Upload is not configured");
+        }
+        const putResponse = await fetch(upload.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": contentType },
+          body: file
+        });
+        if (!putResponse.ok) {
+          throw new Error("Failed to upload media");
+        }
+        const payload = { type, url: upload.publicUrl, name: file.name };
+        pushHistory({
+          ...boardData,
+          hexagons: (boardData.hexagons || []).map((hex) =>
+            hex.id === targetId ? { ...hex, content: payload } : hex
+          )
+        });
+      } catch (e) {
+        setErr(e.message || "Failed to upload media");
+      } finally {
+        pendingMediaRef.current = { id: null, type: null };
+      }
+    })();
   }
 
   function handleHexPointerDown(event, hexId) {
@@ -1406,6 +1421,7 @@ export default function App() {
             {(boardData.hexagons || []).map((hex) => {
               const clipId = `clip-${hex.id}`;
               const gradientId = `grad-${hex.id}`;
+              const mediaSrc = hex.content?.url || hex.content?.dataUrl;
               return (
               <g
                 key={hex.id}
@@ -1436,9 +1452,9 @@ export default function App() {
                 />
                 {hex.content?.type ? (
                   <g clipPath={`url(#${clipId})`}>
-                    {hex.content.type === "image" ? (
+                    {hex.content.type === "image" && mediaSrc ? (
                       <image
-                        href={hex.content.dataUrl}
+                        href={mediaSrc}
                         x={-hexRadius}
                         y={-hexRadius}
                         width={hexRadius * 2}
@@ -1446,7 +1462,7 @@ export default function App() {
                         preserveAspectRatio="xMidYMid slice"
                       />
                     ) : null}
-                    {hex.content.type === "video" ? (
+                    {hex.content.type === "video" && mediaSrc ? (
                       <foreignObject
                         x={-hexRadius}
                         y={-hexRadius}
@@ -1455,13 +1471,13 @@ export default function App() {
                       >
                         <video
                           id={`media-${hex.id}`}
-                          src={hex.content.dataUrl}
+                          src={mediaSrc}
                           controls
                           style={{ width: "100%", height: "100%", objectFit: "cover" }}
                         />
                       </foreignObject>
                     ) : null}
-                    {hex.content.type === "audio" ? (
+                    {hex.content.type === "audio" && mediaSrc ? (
                       <foreignObject
                         x={-hexRadius}
                         y={-hexRadius}
@@ -1470,13 +1486,13 @@ export default function App() {
                       >
                         <audio
                           id={`media-${hex.id}`}
-                          src={hex.content.dataUrl}
+                          src={mediaSrc}
                           controls
                           style={{ width: "100%" }}
                         />
                       </foreignObject>
                     ) : null}
-                    {hex.content.type === "pdf" ? (
+                    {hex.content.type === "pdf" && mediaSrc ? (
                       <foreignObject
                         x={-hexRadius}
                         y={-hexRadius}
@@ -1485,7 +1501,7 @@ export default function App() {
                       >
                         <iframe
                           title={hex.content.name || "PDF"}
-                          src={hex.content.dataUrl}
+                          src={mediaSrc}
                           style={{ width: "100%", height: "100%", border: "none" }}
                         />
                       </foreignObject>

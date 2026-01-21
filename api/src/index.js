@@ -6,6 +6,8 @@ import bcrypt from "bcrypt";
 import http from "http";
 import { WebSocketServer } from "ws";
 import crypto from "crypto";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { PrismaClient } from "@prisma/client";
 
 dotenv.config();
@@ -18,10 +20,29 @@ app.use(express.json({ limit: "2mb" }));
 
 const jwtSecret = process.env.JWT_SECRET;
 const inviteAllowlist = process.env.INVITE_ALLOWLIST || "";
+const s3Bucket = process.env.S3_BUCKET || "";
+const s3Region = process.env.S3_REGION || "";
+const s3Endpoint = process.env.S3_ENDPOINT || "";
+const s3AccessKeyId = process.env.S3_ACCESS_KEY_ID || "";
+const s3SecretAccessKey = process.env.S3_SECRET_ACCESS_KEY || "";
+const s3PublicBaseUrl = process.env.S3_PUBLIC_BASE_URL || "";
 
 if (!jwtSecret) {
   throw new Error("JWT_SECRET is required");
 }
+
+const s3Client =
+  s3Bucket && s3AccessKeyId && s3SecretAccessKey
+    ? new S3Client({
+        region: s3Region || "auto",
+        endpoint: s3Endpoint || undefined,
+        credentials: {
+          accessKeyId: s3AccessKeyId,
+          secretAccessKey: s3SecretAccessKey
+        },
+        forcePathStyle: Boolean(s3Endpoint)
+      })
+    : null;
 
 function signToken(user) {
   return jwt.sign({ sub: user.id, email: user.email }, jwtSecret, { expiresIn: "7d" });
@@ -193,6 +214,31 @@ app.get("/boards/:id", authMiddleware, async (req, res) => {
       ownerEmail: board.owner?.email || null
     }
   });
+});
+
+app.post("/uploads", authMiddleware, async (req, res) => {
+  if (!s3Client || !s3Bucket) {
+    return res.status(500).json({ error: "Uploads are not configured" });
+  }
+  const { filename, contentType } = req.body ?? {};
+  if (!filename || !contentType) {
+    return res.status(400).json({ error: "Filename and contentType are required" });
+  }
+  const safeName = String(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const key = `${req.userId}/${crypto.randomUUID()}-${safeName}`;
+  const command = new PutObjectCommand({
+    Bucket: s3Bucket,
+    Key: key,
+    ContentType: contentType
+  });
+  const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 60 });
+  const publicBase = s3PublicBaseUrl
+    ? s3PublicBaseUrl.replace(/\/$/, "")
+    : s3Endpoint
+    ? `${s3Endpoint.replace(/\/$/, "")}/${s3Bucket}`
+    : "";
+  const publicUrl = publicBase ? `${publicBase}/${key}` : null;
+  return res.json({ uploadUrl, publicUrl, key });
 });
 
 app.put("/boards/:id", authMiddleware, async (req, res) => {
