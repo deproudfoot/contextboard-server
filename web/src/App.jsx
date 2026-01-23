@@ -1178,6 +1178,39 @@ export default function App() {
     setSelectedIds(new Set(ids));
   }
 
+  function findHexAtPoint(point) {
+    const hexagons = boardData.hexagons || [];
+    for (let i = hexagons.length - 1; i >= 0; i -= 1) {
+      const hex = hexagons[i];
+      const dx = point.x - (hex.x || 0);
+      const dy = point.y - (hex.y || 0);
+      if (Math.hypot(dx, dy) <= hexRadius) {
+        return hex;
+      }
+    }
+    return null;
+  }
+
+  function handleDropMedia(event) {
+    event.preventDefault();
+    if (!canEdit) return;
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left - pan.x) / zoom,
+      y: (event.clientY - rect.top - pan.y) / zoom
+    };
+    const targetHex = findHexAtPoint(point);
+    const targetId = targetHex?.id || Array.from(selectedIds)[0];
+    if (!targetId) {
+      setErr("Select a hexagon or drop directly onto one.");
+      return;
+    }
+    pendingMediaRef.current = { id: targetId, type: null };
+    handleMediaChange(file);
+  }
+
   function handleDeleteSelected() {
     if (!canEdit) return;
     if (selectedIds.size === 0) return;
@@ -1503,6 +1536,8 @@ export default function App() {
             sendPresence(cursor);
           }}
           onPointerUp={handleCanvasPointerUp}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={handleDropMedia}
         >
           <rect width="100%" height="100%" fill="#f1f5f9" />
           <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
