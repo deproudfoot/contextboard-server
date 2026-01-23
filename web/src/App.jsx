@@ -102,6 +102,8 @@ export default function App() {
   const imageInputRef = useRef(null);
   const videoInputRef = useRef(null);
   const audioInputRef = useRef(null);
+  const pdfInputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const pendingMediaRef = useRef({ id: null, type: null });
   const wsRef = useRef(null);
   const wsSendTimer = useRef(null);
@@ -111,6 +113,11 @@ export default function App() {
   const [presence, setPresence] = useState({});
   const [presenceList, setPresenceList] = useState([]);
   const presenceTimer = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const longPressStartRef = useRef(null);
+  const [modalHexId, setModalHexId] = useState(null);
+  const [modalText, setModalText] = useState("");
+  const [modalTextLoading, setModalTextLoading] = useState(false);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -297,6 +304,7 @@ export default function App() {
     function handleKey(event) {
       if (event.key === "Escape") {
         setContextMenu(null);
+        setModalHexId(null);
       }
     }
     function handleClick() {
@@ -309,6 +317,32 @@ export default function App() {
       window.removeEventListener("click", handleClick);
     };
   }, []);
+
+  function cancelLongPress() {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+  }
+
+  function openContextMenuAt(point, hexId) {
+    if (!canEdit) return;
+    setSelectedIds(new Set([hexId]));
+    setContextMenu({ x: point.x, y: point.y, targetId: hexId });
+  }
+
+  function startLongPress(event, hexId) {
+    if (!canEdit) return;
+    if (event.pointerType !== "touch") return;
+    cancelLongPress();
+    const start = { x: event.clientX, y: event.clientY };
+    longPressStartRef.current = { ...start, id: hexId };
+    longPressTimerRef.current = window.setTimeout(() => {
+      openContextMenuAt(start, hexId);
+      longPressTimerRef.current = null;
+    }, 450);
+  }
 
   useEffect(() => {
     if (!activeBoardId) return;
@@ -323,6 +357,33 @@ export default function App() {
     setZoom(zoomMid);
     setPan({ x: rect.width / 2, y: rect.height / 2 });
   }, [activeBoardId, boardData?.viewport]);
+
+  useEffect(() => {
+    const hex = modalHexId
+      ? (boardData.hexagons || []).find((item) => item.id === modalHexId)
+      : null;
+    if (!hex || hex.content?.type !== "textfile" || !hex.content?.url) {
+      setModalText("");
+      setModalTextLoading(false);
+      return;
+    }
+    let canceled = false;
+    setModalTextLoading(true);
+    fetch(hex.content.url)
+      .then((response) => response.text())
+      .then((text) => {
+        if (!canceled) setModalText(text);
+      })
+      .catch(() => {
+        if (!canceled) setModalText("Unable to preview this file.");
+      })
+      .finally(() => {
+        if (!canceled) setModalTextLoading(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [modalHexId, boardData.hexagons]);
 
   const canEdit = !sharedView && (activeBoardRole === "owner" || activeBoardRole === "editor");
   const canComment = sharedView && sharedRole === "comment";
@@ -619,6 +680,13 @@ export default function App() {
 
   function handleCanvasPointerMove(event) {
     if (!dragState) return;
+    if (longPressStartRef.current) {
+      const dx = event.clientX - longPressStartRef.current.x;
+      const dy = event.clientY - longPressStartRef.current.y;
+      if (Math.hypot(dx, dy) > 8) {
+        cancelLongPress();
+      }
+    }
     const rect = event.currentTarget.getBoundingClientRect();
     const rawX = (event.clientX - rect.left - pan.x) / zoom;
     const rawY = (event.clientY - rect.top - pan.y) / zoom;
@@ -675,6 +743,7 @@ export default function App() {
   }
 
   function handleCanvasPointerUp() {
+    cancelLongPress();
     if (dragState && canEdit) {
       const hexSize = hexRadius * 2;
       const snapDistance = hexSize * snapRatio;
@@ -756,7 +825,14 @@ export default function App() {
     if (!targetId) return;
     (async () => {
       try {
-        const type = forcedType
+        const lowerName = file.name.toLowerCase();
+        const isTextFile =
+          file.type.startsWith("text/") ||
+          file.type === "application/json" ||
+          lowerName.endsWith(".md") ||
+          lowerName.endsWith(".txt") ||
+          lowerName.endsWith(".csv");
+        const type = forcedType && forcedType !== "file"
           ? forcedType
           : file.type.startsWith("image/")
           ? "image"
@@ -766,6 +842,8 @@ export default function App() {
           ? "audio"
           : file.type === "application/pdf"
           ? "pdf"
+          : isTextFile
+          ? "textfile"
           : "file";
         const contentType = file.type || "application/octet-stream";
         const upload = await createUpload({ filename: file.name, contentType });
@@ -780,7 +858,7 @@ export default function App() {
         if (!putResponse.ok) {
           throw new Error("Failed to upload media");
         }
-        const payload = { type, url: upload.publicUrl, name: file.name };
+        const payload = { type, url: upload.publicUrl, name: file.name, contentType };
         pushHistory({
           ...boardData,
           hexagons: (boardData.hexagons || []).map((hex) =>
@@ -801,6 +879,12 @@ export default function App() {
       setLastSelectedId(hexId);
       return;
     }
+    if (event.pointerType === "touch" && !event.isPrimary) {
+      event.preventDefault();
+      cancelLongPress();
+      openContextMenuAt({ x: event.clientX, y: event.clientY }, hexId);
+      return;
+    }
     const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
     const localX = rect ? (event.clientX - rect.left - pan.x) / zoom : event.clientX;
     const localY = rect ? (event.clientY - rect.top - pan.y) / zoom : event.clientY;
@@ -819,6 +903,7 @@ export default function App() {
     })();
     setSelectedIds(currentSelection);
     setLastSelectedId(hexId);
+    startLongPress(event, hexId);
     const dragIds = (() => {
       if (currentSelection.size > 1) return currentSelection;
       const connected = new Set([hexId]);
@@ -858,8 +943,7 @@ export default function App() {
   function openContextMenu(event, hexId) {
     if (!canEdit) return;
     event.preventDefault();
-    setSelectedIds(new Set([hexId]));
-    setContextMenu({ x: event.clientX, y: event.clientY, targetId: hexId });
+    openContextMenuAt({ x: event.clientX, y: event.clientY }, hexId);
   }
 
   function setHexContent(id, content) {
@@ -921,11 +1005,45 @@ export default function App() {
     setHexContent(id, { type: "hypertext", value: "Visit https://openai.com" });
   }
 
+  function getHyperlink(hex) {
+    if (hex?.content?.type !== "hypertext") return null;
+    if (typeof hex.content.value !== "string") return null;
+    const match = hex.content.value.match(/https?:\/\/\S+/);
+    return match ? match[0] : null;
+  }
+
+  function getOfficeViewerUrl(content) {
+    if (!content?.url || !content?.name) return null;
+    const ext = content.name.toLowerCase().split(".").pop();
+    const officeExtensions = new Set([
+      "doc",
+      "docx",
+      "ppt",
+      "pptx",
+      "xls",
+      "xlsx",
+      "xlsm",
+      "xlsb",
+      "odt",
+      "ods",
+      "odp"
+    ]);
+    if (!ext || !officeExtensions.has(ext)) return null;
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(content.url)}`;
+  }
+
+  function openHexModal(id) {
+    setModalHexId(id);
+    setContextMenu(null);
+  }
+
   function triggerMediaPicker(id, type) {
     pendingMediaRef.current = { id, type };
     if (type === "image") imageInputRef.current?.click();
     if (type === "video") videoInputRef.current?.click();
     if (type === "audio") audioInputRef.current?.click();
+    if (type === "pdf") pdfInputRef.current?.click();
+    if (type === "file") fileInputRef.current?.click();
   }
 
   function getHexPoints(radius) {
@@ -1136,6 +1254,24 @@ export default function App() {
   if (activeBoardId && (user || sharedView)) {
     const selected = (boardData.hexagons || []).find((hex) => selectedIds.has(hex.id));
     const connections = buildConnections(boardData.hexagons || []);
+    const modalHex = modalHexId
+      ? (boardData.hexagons || []).find((hex) => hex.id === modalHexId)
+      : null;
+    const modalLink = modalHex ? getHyperlink(modalHex) : null;
+    const modalTitle =
+      modalHex?.text ||
+      modalHex?.content?.name ||
+      (modalHex?.content?.type ? modalHex.content.type.toUpperCase() : "Hexagon");
+    const modalUrl = modalHex?.content?.url;
+    const modalOfficeUrl =
+      modalHex?.content?.type === "file" ? getOfficeViewerUrl(modalHex.content) : null;
+    const hexLabelMap = {
+      video: "VIDEO",
+      audio: "AUDIO",
+      pdf: "PDF",
+      file: "FILE",
+      textfile: "TEXT"
+    };
     return (
       <div className="board-shell">
         <div className="board-topbar">
@@ -1156,6 +1292,14 @@ export default function App() {
             </span>
           ) : null}
           <div className="spacer" />
+          <button
+            className="icon-button"
+            onClick={() => selected && openHexModal(selected.id)}
+            disabled={!selected}
+            aria-label="Open"
+          >
+            🗔
+          </button>
           {canEdit ? (
             <>
               <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
@@ -1520,6 +1664,25 @@ export default function App() {
                     ) : null}
                   </g>
                 ) : null}
+                {hex.content?.type ? (
+                  <g
+                    className="hex-more-button"
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      event.preventDefault();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openHexModal(hex.id);
+                    }}
+                    transform={`translate(${hexRadius - 10} ${-hexRadius + 10})`}
+                  >
+                    <circle r="10" />
+                    <text className="hex-more-dots" textAnchor="middle" dominantBaseline="middle">
+                      ⋯
+                    </text>
+                  </g>
+                ) : null}
                 {showNumbers && hex.number ? (
                   <text x={-hexRadius + 6} y={-hexRadius + 12} fontSize="10" fill="#0f172a">
                     {hex.number}
@@ -1535,7 +1698,7 @@ export default function App() {
                   {hex.content?.type === "text" || hex.content?.type === "hypertext"
                     ? ""
                     : hex.content?.type && hex.content?.type !== "image"
-                    ? hex.content.type.toUpperCase()
+                    ? hexLabelMap[hex.content.type] || hex.content.type.toUpperCase()
                     : hex.text || "Hex"}
                 </text>
               </g>
@@ -1586,6 +1749,7 @@ export default function App() {
             onClick={(event) => event.stopPropagation()}
             onMouseLeave={() => setContextMenu(null)}
           >
+            <button onClick={() => openHexModal(contextMenu.targetId)}>Open</button>
             <button onClick={() => setSelectedIds((prev) => {
               const next = new Set(prev);
               next.delete(contextMenu.targetId);
@@ -1605,6 +1769,12 @@ export default function App() {
             </button>
             <button onClick={() => triggerMediaPicker(contextMenu.targetId, "audio")}>
               Set Audio
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "pdf")}>
+              Set PDF
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "file")}>
+              Set File
             </button>
             <div className="menu-section">
               Change Color
@@ -1662,7 +1832,82 @@ export default function App() {
               style={{ display: "none" }}
               onChange={(e) => handleMediaChange(e.target.files?.[0], "audio")}
             />
+            <input
+              ref={pdfInputRef}
+              type="file"
+              accept="application/pdf"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "pdf")}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="*/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "file")}
+            />
           </>
+        ) : null}
+        {modalHex ? (
+          <div className="modal-overlay" onClick={() => setModalHexId(null)}>
+            <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <div className="modal-title">{modalTitle}</div>
+                <button className="icon-button" onClick={() => setModalHexId(null)} aria-label="Close">
+                  ✕
+                </button>
+              </div>
+              <div className="modal-body">
+                {modalHex.content?.type === "image" && modalUrl ? (
+                  <img className="modal-media" src={modalUrl} alt={modalHex.text || "Image"} />
+                ) : null}
+                {modalHex.content?.type === "video" && modalUrl ? (
+                  <video className="modal-media" src={modalUrl} controls />
+                ) : null}
+                {modalHex.content?.type === "audio" && modalUrl ? (
+                  <audio className="modal-media" src={modalUrl} controls />
+                ) : null}
+                {modalHex.content?.type === "pdf" && modalUrl ? (
+                  <iframe
+                    className="modal-media"
+                    title={modalHex.content.name || "PDF"}
+                    src={modalUrl}
+                  />
+                ) : null}
+                {modalHex.content?.type === "text" || modalHex.content?.type === "hypertext" ? (
+                  <div className="modal-text">{modalHex.content?.value || ""}</div>
+                ) : null}
+                {modalHex.content?.type === "textfile" ? (
+                  <pre className="modal-text">{modalTextLoading ? "Loading…" : modalText}</pre>
+                ) : null}
+                {!modalHex.content?.type ? (
+                  <div className="modal-text">{modalHex.text || ""}</div>
+                ) : null}
+                {modalHex.content?.type === "file" && (modalOfficeUrl || modalUrl) ? (
+                  <iframe
+                    className="modal-media"
+                    title={modalHex.content.name || "File"}
+                    src={modalOfficeUrl || modalUrl}
+                  />
+                ) : null}
+              </div>
+              <div className="modal-actions">
+                {modalUrl && (modalHex.content?.type === "file" || modalHex.content?.type === "textfile") ? (
+                  <a className="button" href={modalUrl} target="_blank" rel="noreferrer">
+                    Open file
+                  </a>
+                ) : null}
+                {modalLink ? (
+                  <a className="button" href={modalLink} target="_blank" rel="noreferrer">
+                    Open link
+                  </a>
+                ) : null}
+                <button className="button" onClick={() => setModalHexId(null)}>
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
       </div>
     );
