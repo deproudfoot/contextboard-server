@@ -20,12 +20,24 @@ app.use(express.json({ limit: "2mb" }));
 
 const jwtSecret = process.env.JWT_SECRET;
 const inviteAllowlist = process.env.INVITE_ALLOWLIST || "";
-const s3Bucket = process.env.S3_BUCKET || "";
-const s3Region = process.env.S3_REGION || "";
-const s3Endpoint = process.env.S3_ENDPOINT || "";
-const s3AccessKeyId = process.env.S3_ACCESS_KEY_ID || "";
-const s3SecretAccessKey = process.env.S3_SECRET_ACCESS_KEY || "";
-const s3PublicBaseUrl = process.env.S3_PUBLIC_BASE_URL || "";
+const r2Bucket = process.env.R2_BUCKET_NAME || "";
+const r2Region = process.env.R2_REGION || "";
+const r2Endpoint = process.env.R2_ENDPOINT || "";
+const r2AccessKeyId = process.env.R2_ACCESS_KEY_ID || "";
+const r2SecretAccessKey = process.env.R2_SECRET_ACCESS_KEY || "";
+const r2PublicBaseUrl = process.env.R2_PUBLIC_URL || "";
+const r2AccountId = process.env.R2_ACCOUNT_ID || "";
+
+const s3Bucket = r2Bucket || process.env.S3_BUCKET || "";
+const s3Region = r2Region || process.env.S3_REGION || "";
+const s3Endpoint =
+  r2Endpoint ||
+  (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : "") ||
+  process.env.S3_ENDPOINT ||
+  "";
+const s3AccessKeyId = r2AccessKeyId || process.env.S3_ACCESS_KEY_ID || "";
+const s3SecretAccessKey = r2SecretAccessKey || process.env.S3_SECRET_ACCESS_KEY || "";
+const s3PublicBaseUrl = r2PublicBaseUrl || process.env.S3_PUBLIC_BASE_URL || "";
 
 if (!jwtSecret) {
   throw new Error("JWT_SECRET is required");
@@ -102,6 +114,26 @@ function getAccessRole(board, userId) {
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get("/health/uploads", (_req, res) => {
+  const hasRequired =
+    Boolean(s3Bucket) &&
+    Boolean(s3AccessKeyId) &&
+    Boolean(s3SecretAccessKey) &&
+    Boolean(s3Endpoint) &&
+    Boolean(s3PublicBaseUrl);
+  res.json({
+    ok: hasRequired,
+    configured: {
+      bucket: Boolean(s3Bucket),
+      accessKeyId: Boolean(s3AccessKeyId),
+      secretAccessKey: Boolean(s3SecretAccessKey),
+      endpoint: Boolean(s3Endpoint),
+      publicBaseUrl: Boolean(s3PublicBaseUrl),
+      region: Boolean(s3Region)
+    }
+  });
 });
 
 app.post("/auth/register", async (req, res) => {
