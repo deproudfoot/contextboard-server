@@ -118,6 +118,8 @@ export default function App() {
   const [modalHexId, setModalHexId] = useState(null);
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
+  const [deletedBoard, setDeletedBoard] = useState(null);
+  const deleteTimerRef = useRef(null);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
@@ -301,6 +303,14 @@ export default function App() {
   }, [commentAuthor]);
 
   useEffect(() => {
+    return () => {
+      if (deleteTimerRef.current) {
+        clearTimeout(deleteTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     function handleKey(event) {
       if (event.key === "Escape") {
         setContextMenu(null);
@@ -420,6 +430,11 @@ export default function App() {
     setEmail("");
     setPassword("");
     setErr("");
+    setDeletedBoard(null);
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
   }
 
   function exitSharedView() {
@@ -862,7 +877,13 @@ export default function App() {
         pushHistory({
           ...boardData,
           hexagons: (boardData.hexagons || []).map((hex) =>
-            hex.id === targetId ? { ...hex, content: payload } : hex
+            hex.id === targetId
+              ? {
+                  ...hex,
+                  content: payload,
+                  text: hex.text === "New" ? "" : hex.text
+                }
+              : hex
           )
         });
       } catch (e) {
@@ -1276,12 +1297,34 @@ export default function App() {
 
   async function handleDeleteBoard(id) {
     setErr("");
-    try {
-      await deleteBoard(id);
-      setBoards((prev) => prev.filter((board) => board.id !== id));
-    } catch (e) {
-      setErr(e.message);
+    const target = boards.find((board) => board.id === id);
+    if (!target) return;
+    setBoards((prev) => prev.filter((board) => board.id !== id));
+    setDeletedBoard(target);
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
     }
+    deleteTimerRef.current = window.setTimeout(async () => {
+      try {
+        await deleteBoard(id);
+      } catch (e) {
+        setErr(e.message);
+        setBoards((prev) => [target, ...prev]);
+      } finally {
+        setDeletedBoard(null);
+        deleteTimerRef.current = null;
+      }
+    }, 5000);
+  }
+
+  function handleUndoDelete() {
+    if (!deletedBoard) return;
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
+    setBoards((prev) => [deletedBoard, ...prev]);
+    setDeletedBoard(null);
   }
 
   if (activeBoardId && (user || sharedView)) {
@@ -1984,6 +2027,14 @@ export default function App() {
             </div>
           ))}
         </div>
+        {deletedBoard ? (
+          <div className="undo-toast">
+            Board deleted.
+            <button className="link-button" type="button" onClick={handleUndoDelete}>
+              Undo
+            </button>
+          </div>
+        ) : null}
       </div>
     );
   }
