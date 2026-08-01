@@ -38,6 +38,57 @@ function Button({ children, ...props }) {
   );
 }
 
+const MAX_PASTE_TOKENS = 50;
+
+function stripListPrefix(line) {
+  return line
+    .replace(/^\s*[-*•]\s+/, "")
+    .replace(/^\s*\d+[.)]\s+/, "")
+    .trim();
+}
+
+/** Split clipboard/plain text into statement tokens for hex creation. */
+function splitTextIntoStatements(raw) {
+  if (typeof raw !== "string") return [];
+  const text = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!text) return [];
+
+  const lines = text
+    .split("\n")
+    .map(stripListPrefix)
+    .filter(Boolean);
+
+  let statements = lines;
+  if (statements.length <= 1) {
+    const single = statements[0] || text;
+    const sentences = single
+      .split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (sentences.length > 1) {
+      statements = sentences;
+    } else {
+      statements = [single];
+    }
+  }
+
+  return statements.slice(0, MAX_PASTE_TOKENS);
+}
+
+function statementLabel(value) {
+  const compact = String(value || "").replace(/\s+/g, " ").trim();
+  if (!compact) return "Token";
+  return compact.length > 28 ? `${compact.slice(0, 27)}…` : compact;
+}
+
+function isEditableTarget(target) {
+  if (!target || !(target instanceof Element)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (target.isContentEditable) return true;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
 export default function App() {
   const hexRadius = 36;
   const snapSize = 20;
@@ -812,6 +863,87 @@ export default function App() {
     setSelectedIds(new Set(hexagons.slice(-count).map((hex) => hex.id)));
     setShowAddMenu(false);
   }
+
+  function handleAddHexagonsFromStatements(statements, color = addColor) {
+    if (!canEdit) return 0;
+    const texts = (statements || [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, MAX_PASTE_TOKENS);
+    if (!texts.length) return 0;
+
+    const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
+    const svg = canvasRef.current;
+    const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+    const center = { x: rect.width / 2, y: rect.height / 2 };
+    const worldX = (center.x - pan.x) / zoom;
+    const worldY = (center.y - pan.y) / zoom;
+    const hexagons = [...(boardData.hexagons || [])];
+    const cols = Math.ceil(Math.sqrt(texts.length));
+    const spacing = hexRadius * 2.2;
+    const createdIds = [];
+
+    for (let i = 0; i < texts.length; i += 1) {
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      const value = texts[i];
+      const id = crypto.randomUUID();
+      createdIds.push(id);
+      hexagons.push({
+        id,
+        number: maxNumber + 1 + i,
+        x: Math.round((worldX + col * spacing) / snapSize) * snapSize,
+        y: Math.round((worldY + row * spacing) / snapSize) * snapSize,
+        text: statementLabel(value),
+        fillColor: color,
+        connections: [],
+        content: { type: "text", value }
+      });
+    }
+
+    pushHistory({ ...boardData, hexagons });
+    setSelectedIds(new Set(createdIds));
+    setShowAddMenu(false);
+    setErr("");
+    return createdIds.length;
+  }
+
+  async function handlePasteStatementsAsTokens() {
+    if (!canEdit) return;
+    try {
+      if (!navigator.clipboard?.readText) {
+        setErr("Clipboard access is not available in this browser.");
+        return;
+      }
+      const raw = await navigator.clipboard.readText();
+      const statements = splitTextIntoStatements(raw);
+      if (!statements.length) {
+        setErr("Clipboard is empty. Copy statements first, then paste as tokens.");
+        return;
+      }
+      const count = handleAddHexagonsFromStatements(statements, addColor);
+      if (!count) {
+        setErr("No statements found in clipboard.");
+      }
+    } catch {
+      setErr("Could not read clipboard. Allow clipboard permission, or use Ctrl/Cmd+V on the board.");
+    }
+  }
+
+  useEffect(() => {
+    function handlePaste(event) {
+      if (!canEdit || !activeBoardId || sharedView) return;
+      if (isEditableTarget(event.target)) return;
+      const raw = event.clipboardData?.getData("text/plain");
+      if (typeof raw !== "string" || !raw.trim()) return;
+      const statements = splitTextIntoStatements(raw);
+      if (!statements.length) return;
+      event.preventDefault();
+      handleAddHexagonsFromStatements(statements, addColor);
+    }
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, [canEdit, activeBoardId, sharedView, addColor, boardData, pan, zoom]);
 
   function handleLabelChange(value) {
     if (!canEdit) return;
@@ -1818,6 +1950,13 @@ export default function App() {
               />
             </label>
             <Button onClick={() => handleAddHexagon(addCount, addColor)}>Add</Button>
+            <div className="menu-section">From clipboard</div>
+            <p className="add-menu-hint">
+              Splits lines (or sentences) into text tokens. Or press Ctrl/Cmd+V on the board.
+            </p>
+            <Button type="button" onClick={handlePasteStatementsAsTokens}>
+              Paste as tokens
+            </Button>
           </div>
         ) : null}
         {canEdit && contextMenu ? (
