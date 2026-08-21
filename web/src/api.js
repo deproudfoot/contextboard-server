@@ -6,16 +6,28 @@ const API_BASE =
 /**
  * Generic request helper
  */
+function toNetworkError(cause) {
+  const error = new Error("Network unavailable");
+  error.code = "NETWORK";
+  error.cause = cause;
+  return error;
+}
+
 async function request(path, options = {}) {
   const token = getToken();
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {})
-    },
-    ...options
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(options.headers || {})
+      },
+      ...options
+    });
+  } catch (error) {
+    throw toNetworkError(error);
+  }
 
   const text = await response.text();
   let data = {};
@@ -34,13 +46,18 @@ async function request(path, options = {}) {
 }
 
 async function requestPublic(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    ...options
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      },
+      ...options
+    });
+  } catch (error) {
+    throw toNetworkError(error);
+  }
 
   const text = await response.text();
   let data = {};

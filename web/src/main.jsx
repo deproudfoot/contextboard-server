@@ -8,3 +8,11 @@ createRoot(document.getElementById("root")).render(
     <App />
   </StrictMode>
 );
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Offline shell is best-effort; ignore registration failures in unsupported contexts.
+    });
+  });
+}

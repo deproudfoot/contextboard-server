@@ -73,6 +73,35 @@ body {
   color: #b91c1c;
 }
 
+.sync-badge {
+  font-size: 12px;
+  color: #334155;
+  background: #e2e8f0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.sync-badge.sync-offline {
+  color: #9a3412;
+  background: #ffedd5;
+}
+
+.sync-badge.sync-pending {
+  color: #854d0e;
+  background: #fef9c3;
+}
+
+.sync-badge.sync-syncing {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.sync-badge.sync-idle {
+  color: #166534;
+  background: #dcfce7;
+}
+
 .presence-list {
   font-size: 12px;
   color: #475569;

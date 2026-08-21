@@ -20,6 +20,19 @@ import {
   addShareComment,
   createUpload
 } from "./api";
+import {
+  cacheBoard,
+  cacheBoardList,
+  clearPendingSave,
+  countPendingSaves,
+  enqueueSave,
+  flushPendingSaves,
+  getCachedBoard,
+  getCachedBoardList,
+  getPendingSave,
+  isNetworkError,
+  isOnline
+} from "./offline";
 
 function Field({ label, ...props }) {
   return (
@@ -120,8 +133,74 @@ export default function App() {
   const [modalTextLoading, setModalTextLoading] = useState(false);
   const [deletedBoard, setDeletedBoard] = useState(null);
   const deleteTimerRef = useRef(null);
+  const [online, setOnline] = useState(() => isOnline());
+  const [syncState, setSyncState] = useState("idle");
+  const [pendingCount, setPendingCount] = useState(0);
+  const syncingRef = useRef(false);
+  const activeBoardIdRef = useRef(null);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
+
+  useEffect(() => {
+    activeBoardIdRef.current = activeBoardId;
+  }, [activeBoardId]);
+
+  async function refreshPendingCount() {
+    try {
+      const count = await countPendingSaves();
+      setPendingCount(count);
+      return count;
+    } catch {
+      return 0;
+    }
+  }
+
+  async function syncPendingSaves() {
+    if (!user || syncingRef.current || !isOnline()) return;
+    syncingRef.current = true;
+    setSyncState("syncing");
+    try {
+      const { synced, failed } = await flushPendingSaves(updateBoard);
+      const remaining = await refreshPendingCount();
+      const currentBoardId = activeBoardIdRef.current;
+      if (synced.length && currentBoardId && synced.includes(currentBoardId)) {
+        const cached = await getCachedBoard(currentBoardId);
+        if (cached) {
+          setActiveBoard((prev) => ({ ...(prev || {}), ...cached, pendingSync: false }));
+          setBoards((prev) =>
+            prev.map((item) =>
+              item.id === cached.id
+                ? {
+                    ...item,
+                    ...cached,
+                    accessRole: item.accessRole,
+                    ownerEmail: item.ownerEmail
+                  }
+                : item
+            )
+          );
+        }
+      }
+      if (failed.length) {
+        const first = failed[0];
+        if (!isNetworkError(first.error)) {
+          setErr(first.error?.message || "Failed to sync offline changes");
+        }
+      }
+      if (remaining > 0) {
+        setSyncState(isOnline() ? "pending" : "offline");
+      } else {
+        setSyncState(isOnline() ? "idle" : "offline");
+      }
+    } catch (error) {
+      setSyncState(isOnline() ? "pending" : "offline");
+      if (!isNetworkError(error)) {
+        setErr(error.message || "Failed to sync offline changes");
+      }
+    } finally {
+      syncingRef.current = false;
+    }
+  }
 
   useEffect(() => {
     if (!token) {
@@ -177,10 +256,58 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    function handleOnline() {
+      setOnline(true);
+      syncPendingSaves();
+    }
+    function handleOffline() {
+      setOnline(false);
+      setSyncState((prev) => (prev === "idle" ? "offline" : prev === "syncing" ? "pending" : prev));
+    }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    refreshPendingCount().then((count) => {
+      if (!isOnline()) {
+        setOnline(false);
+        setSyncState(count > 0 ? "pending" : "offline");
+      } else if (count > 0) {
+        setSyncState("pending");
+        syncPendingSaves();
+      }
+    });
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, [user]);
+
+  useEffect(() => {
     if (!user) return;
+    let canceled = false;
     listBoards()
-      .then((response) => setBoards(response.boards || []))
-      .catch((e) => setErr(e.message));
+      .then(async (response) => {
+        if (canceled) return;
+        const nextBoards = response.boards || [];
+        setBoards(nextBoards);
+        await cacheBoardList(user.id, nextBoards);
+        setOnline(true);
+      })
+      .catch(async (e) => {
+        if (canceled) return;
+        if (isNetworkError(e) || !isOnline()) {
+          const cached = await getCachedBoardList(user.id);
+          if (cached?.length) {
+            setBoards(cached);
+            setOnline(false);
+            setErr("Offline — showing cached boards.");
+            return;
+          }
+        }
+        setErr(e.message);
+      });
+    return () => {
+      canceled = true;
+    };
   }, [user]);
 
   useEffect(() => {
@@ -454,13 +581,28 @@ export default function App() {
 
   async function handleCreateBoard() {
     setErr("");
+    if (!isOnline()) {
+      setErr("Creating boards requires a network connection.");
+      return;
+    }
     try {
       const payload = { title: "Untitled Board", data: { hexagons: [], connections: [], viewport: {} } };
       const response = await createBoard(payload);
       const nextBoard = response.board;
-      setBoards((prev) => [nextBoard, ...prev]);
+      setBoards((prev) => {
+        const next = [nextBoard, ...prev];
+        if (user?.id) {
+          cacheBoardList(user.id, next);
+        }
+        return next;
+      });
+      await cacheBoard(nextBoard);
       openBoard(nextBoard.id);
     } catch (e) {
+      if (isNetworkError(e)) {
+        setErr("Creating boards requires a network connection.");
+        return;
+      }
       setErr(e.message);
     }
   }
@@ -471,9 +613,8 @@ export default function App() {
     setSharedView(false);
     setSharedRole(null);
     setShowSharePanel(false);
-    try {
-      const response = await getBoard(id);
-      const board = response.board;
+
+    function applyOpenedBoard(board, { offline = false } = {}) {
       setActiveBoard(board);
       setBoardTitle(board.title || "");
       setActiveBoardRole(board.accessRole || "owner");
@@ -496,7 +637,41 @@ export default function App() {
       pendingViewportRef.current = true;
       historyRef.current = [];
       redoRef.current = [];
+      if (offline) {
+        setOnline(false);
+        setErr("Offline — opened cached board. Changes will sync when you are back online.");
+      }
+    }
+
+    try {
+      const response = await getBoard(id);
+      const board = response.board;
+      await cacheBoard(board);
+      applyOpenedBoard(board);
+      setOnline(true);
+      const pending = await getPendingSave(id);
+      if (pending) {
+        setSyncState("pending");
+        await refreshPendingCount();
+      }
     } catch (e) {
+      if (isNetworkError(e) || !isOnline()) {
+        const cached = await getCachedBoard(id);
+        if (cached) {
+          const pending = await getPendingSave(id);
+          applyOpenedBoard(
+            {
+              ...cached,
+              data: pending?.data || cached.data,
+              title: pending?.title || cached.title
+            },
+            { offline: true }
+          );
+          await refreshPendingCount();
+          setSyncState(pending ? "pending" : "offline");
+          return;
+        }
+      }
       setErr(e.message);
     }
   }
@@ -561,28 +736,83 @@ export default function App() {
     if (!canEdit) return;
     if (!activeBoardId) return;
     setErr("");
-    try {
-      const response = await updateBoard(activeBoardId, {
-        title: boardTitle.trim() || "Untitled Board",
-        data: {
-          ...boardData,
-          viewport: buildViewportForSave()
-        }
-      });
-      setActiveBoard(response.board);
+    const payload = {
+      title: boardTitle.trim() || "Untitled Board",
+      data: {
+        ...boardData,
+        viewport: buildViewportForSave()
+      }
+    };
+
+    async function applySavedBoard(board, { queued = false } = {}) {
+      setActiveBoard(board);
       setBoards((prev) =>
         prev.map((item) =>
-          item.id === response.board.id
+          item.id === board.id
             ? {
                 ...item,
-                ...response.board,
+                ...board,
                 accessRole: item.accessRole,
                 ownerEmail: item.ownerEmail
               }
             : item
         )
       );
+      await cacheBoard(board);
+      if (user?.id) {
+        setBoards((prev) => {
+          cacheBoardList(user.id, prev);
+          return prev;
+        });
+      }
+      if (queued) {
+        setSyncState("pending");
+        setOnline(false);
+        setErr("Saved offline — will sync when you reconnect.");
+      }
+    }
+
+    if (!isOnline()) {
+      await enqueueSave(activeBoardId, payload, activeBoard?.updatedAt);
+      await applySavedBoard(
+        {
+          ...(activeBoard || { id: activeBoardId }),
+          id: activeBoardId,
+          title: payload.title,
+          data: payload.data,
+          updatedAt: new Date().toISOString(),
+          pendingSync: true
+        },
+        { queued: true }
+      );
+      await refreshPendingCount();
+      return;
+    }
+
+    try {
+      const response = await updateBoard(activeBoardId, payload);
+      await clearPendingSave(activeBoardId);
+      await applySavedBoard({ ...response.board, pendingSync: false });
+      await refreshPendingCount();
+      setSyncState("idle");
+      setOnline(true);
     } catch (e) {
+      if (isNetworkError(e)) {
+        await enqueueSave(activeBoardId, payload, activeBoard?.updatedAt);
+        await applySavedBoard(
+          {
+            ...(activeBoard || { id: activeBoardId }),
+            id: activeBoardId,
+            title: payload.title,
+            data: payload.data,
+            updatedAt: new Date().toISOString(),
+            pendingSync: true
+          },
+          { queued: true }
+        );
+        await refreshPendingCount();
+        return;
+      }
       setErr(e.message || "Failed to save board");
     }
   }
@@ -1368,6 +1598,26 @@ export default function App() {
             </span>
           ) : null}
           <div className="spacer" />
+          <span
+            className={`sync-badge sync-${!online || syncState === "offline" ? "offline" : syncState}`}
+            title={
+              syncState === "syncing"
+                ? "Uploading offline changes"
+                : pendingCount > 0
+                  ? `${pendingCount} board${pendingCount === 1 ? "" : "s"} waiting to sync`
+                  : online
+                    ? "Connected"
+                    : "Offline"
+            }
+          >
+            {!online || syncState === "offline"
+              ? "Offline"
+              : syncState === "syncing"
+                ? "Syncing…"
+                : pendingCount > 0 || syncState === "pending"
+                  ? `Unsynced (${pendingCount || 1})`
+                  : "Online"}
+          </span>
           <button
             className="icon-button"
             onClick={() => selected && openHexModal(selected.id)}
@@ -1997,6 +2247,17 @@ export default function App() {
         <div className="toolbar">
           <h2>My Boards</h2>
           <div className="spacer" />
+          <span
+            className={`sync-badge sync-${!online || syncState === "offline" ? "offline" : syncState}`}
+          >
+            {!online || syncState === "offline"
+              ? "Offline"
+              : syncState === "syncing"
+                ? "Syncing…"
+                : pendingCount > 0 || syncState === "pending"
+                  ? `Unsynced (${pendingCount || 1})`
+                  : "Online"}
+          </span>
           <Button onClick={logout}>Log out</Button>
         </div>
         <div className="card">
