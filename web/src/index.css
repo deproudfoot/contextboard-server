@@ -616,6 +616,8 @@ textarea {
   font-size: 14px;
   color: #1e293b;
   white-space: pre-wrap;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .modal-media {
