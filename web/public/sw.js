@@ -1,8 +1,31 @@
 /* Contextboard offline shell cache */
-const CACHE_NAME = "contextboard-shell-v1";
+const CACHE_NAME = "contextboard-shell-v2";
+const PRECACHE_URLS = ["/", "/index.html", "/manifest.webmanifest", "/vite.svg", "/sw.js"];
+
+async function precacheUrls(urls) {
+  const cache = await caches.open(CACHE_NAME);
+  const list = Array.from(new Set((urls || []).filter(Boolean)));
+  await Promise.all(
+    list.map(async (url) => {
+      try {
+        const response = await fetch(url, { cache: "reload" });
+        if (response && response.ok) {
+          await cache.put(url, response.clone());
+        }
+      } catch {
+        // Best-effort; runtime caching will fill gaps after first online visit.
+      }
+    })
+  );
+}
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
+  event.waitUntil(
+    (async () => {
+      await precacheUrls(PRECACHE_URLS);
+      await self.skipWaiting();
+    })()
+  );
 });
 
 self.addEventListener("activate", (event) => {
@@ -13,6 +36,13 @@ self.addEventListener("activate", (event) => {
       await self.clients.claim();
     })()
   );
+});
+
+self.addEventListener("message", (event) => {
+  const data = event.data || {};
+  if (data.type === "PRECACHE" && Array.isArray(data.urls)) {
+    event.waitUntil(precacheUrls(data.urls));
+  }
 });
 
 self.addEventListener("fetch", (event) => {
@@ -32,15 +62,13 @@ self.addEventListener("fetch", (event) => {
         }
         return networkResponse;
       } catch {
-        const cached = await cache.match(request);
+        const cached =
+          (await cache.match(request)) ||
+          (await cache.match(url.pathname)) ||
+          (request.mode === "navigate"
+            ? (await cache.match("/index.html")) || (await cache.match("/"))
+            : null);
         if (cached) return cached;
-        if (request.mode === "navigate") {
-          return (
-            (await cache.match("/index.html")) ||
-            (await cache.match("/")) ||
-            Response.error()
-          );
-        }
         return Response.error();
       }
     })()

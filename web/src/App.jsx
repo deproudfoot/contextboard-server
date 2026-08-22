@@ -31,8 +31,11 @@ import {
   getCachedBoardList,
   getPendingSave,
   isNetworkError,
-  isOnline
+  isOfflineStorageAvailable,
+  isOnline,
+  requestPersistentStorage
 } from "./offline";
+import { copyText, createId, isAppleWebKit, truncateLabel } from "./browser";
 
 function Field({ label, ...props }) {
   return (
@@ -122,12 +125,12 @@ export default function App() {
   const wsSendTimer = useRef(null);
   const lastSendRef = useRef(0);
   const suppressBroadcastRef = useRef(false);
-  const clientId = useRef(crypto.randomUUID());
   const [presence, setPresence] = useState({});
   const [presenceList, setPresenceList] = useState([]);
   const presenceTimer = useRef(null);
   const longPressTimerRef = useRef(null);
   const longPressStartRef = useRef(null);
+  const suppressMenuClickRef = useRef(false);
   const [modalHexId, setModalHexId] = useState(null);
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
@@ -136,14 +139,27 @@ export default function App() {
   const [online, setOnline] = useState(() => isOnline());
   const [syncState, setSyncState] = useState("idle");
   const [pendingCount, setPendingCount] = useState(0);
+  const [copiedShareToken, setCopiedShareToken] = useState(null);
+  const [useSvgTextFallback] = useState(() => isAppleWebKit());
   const syncingRef = useRef(false);
   const activeBoardIdRef = useRef(null);
+  const clientId = useRef(createId());
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
 
   useEffect(() => {
     activeBoardIdRef.current = activeBoardId;
   }, [activeBoardId]);
+
+  useEffect(() => {
+    if (!user) return;
+    requestPersistentStorage();
+    isOfflineStorageAvailable().then((ok) => {
+      if (!ok) {
+        setErr((prev) => prev || "Offline storage is unavailable in this browser.");
+      }
+    });
+  }, [user]);
 
   async function refreshPendingCount() {
     try {
@@ -444,14 +460,23 @@ export default function App() {
         setModalHexId(null);
       }
     }
-    function handleClick() {
-      setContextMenu(null);
+    function handlePointerDown(event) {
+      if (suppressMenuClickRef.current) {
+        suppressMenuClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const menu = event.target?.closest?.(".context-menu");
+      if (!menu) {
+        setContextMenu(null);
+      }
     }
     window.addEventListener("keydown", handleKey);
-    window.addEventListener("click", handleClick);
+    window.addEventListener("pointerdown", handlePointerDown, true);
     return () => {
       window.removeEventListener("keydown", handleKey);
-      window.removeEventListener("click", handleClick);
+      window.removeEventListener("pointerdown", handlePointerDown, true);
     };
   }, []);
 
@@ -467,11 +492,15 @@ export default function App() {
     if (!canEdit) return;
     setSelectedIds(new Set([hexId]));
     setContextMenu({ x: point.x, y: point.y, targetId: hexId });
+    suppressMenuClickRef.current = true;
+    window.setTimeout(() => {
+      suppressMenuClickRef.current = false;
+    }, 400);
   }
 
   function startLongPress(event, hexId) {
     if (!canEdit) return;
-    if (event.pointerType !== "touch") return;
+    if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
     cancelLongPress();
     const start = { x: event.clientX, y: event.clientY };
     longPressStartRef.current = { ...start, id: hexId };
@@ -773,7 +802,16 @@ export default function App() {
     }
 
     if (!isOnline()) {
-      await enqueueSave(activeBoardId, payload, activeBoard?.updatedAt);
+      try {
+        await enqueueSave(activeBoardId, payload, activeBoard?.updatedAt);
+      } catch (storageError) {
+        setErr(
+          storageError?.name === "QuotaExceededError" || /quota/i.test(String(storageError?.message || ""))
+            ? "Offline storage is full. Free space or reconnect to sync."
+            : "Offline storage is unavailable. Reconnect to save."
+        );
+        return;
+      }
       await applySavedBoard(
         {
           ...(activeBoard || { id: activeBoardId }),
@@ -798,7 +836,16 @@ export default function App() {
       setOnline(true);
     } catch (e) {
       if (isNetworkError(e)) {
-        await enqueueSave(activeBoardId, payload, activeBoard?.updatedAt);
+        try {
+          await enqueueSave(activeBoardId, payload, activeBoard?.updatedAt);
+        } catch (storageError) {
+          setErr(
+            storageError?.name === "QuotaExceededError" || /quota/i.test(String(storageError?.message || ""))
+              ? "Offline storage is full. Free space or reconnect to sync."
+              : "Network failed and offline storage is unavailable."
+          );
+          return;
+        }
         await applySavedBoard(
           {
             ...(activeBoard || { id: activeBoardId }),
@@ -916,10 +963,16 @@ export default function App() {
   }
 
   async function handleCopyShare(token) {
+    const url = buildShareUrl(token);
     try {
-      await navigator.clipboard.writeText(buildShareUrl(token));
+      await copyText(url);
+      setCopiedShareToken(token);
+      setErr("");
+      window.setTimeout(() => {
+        setCopiedShareToken((current) => (current === token ? null : current));
+      }, 2000);
     } catch {
-      setErr("Unable to copy share link.");
+      setErr("Unable to copy share link. Select and copy it manually.");
     }
   }
 
@@ -1028,7 +1081,7 @@ export default function App() {
       const row = Math.floor(i / cols);
       const col = i % cols;
       hexagons.push({
-        id: crypto.randomUUID(),
+        id: createId(),
         number: maxNumber + 1 + i,
         x: Math.round((worldX + col * spacing) / snapSize) * snapSize,
         y: Math.round((worldY + row * spacing) / snapSize) * snapSize,
@@ -1129,6 +1182,14 @@ export default function App() {
       setSelectedIds(new Set([hexId]));
       setLastSelectedId(hexId);
       return;
+    }
+    if (event.pointerType === "touch" || event.pointerType === "pen") {
+      event.preventDefault();
+    }
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // Some browsers throw if capture is unsupported for this target.
     }
     if (event.pointerType === "touch" && !event.isPrimary) {
       event.preventDefault();
@@ -1232,16 +1293,17 @@ export default function App() {
         return;
       }
     }
-    if (!event.target?.classList?.contains("hex-text-label")) {
+    if (
+      hex.content?.type === "video" ||
+      hex.content?.type === "audio" ||
+      hex.content?.type === "pdf" ||
+      hex.content?.type === "file" ||
+      hex.content?.type === "textfile"
+    ) {
+      openHexModal(hex.id);
       return;
     }
-    if (hex.content?.type === "video" || hex.content?.type === "audio") {
-      const media = document.getElementById(`media-${hex.id}`);
-      if (media && media.paused) {
-        media.play();
-      } else if (media) {
-        media.pause();
-      }
+    if (!event.target?.classList?.contains("hex-text-label") && !event.target?.closest?.(".hex-text-content")) {
       return;
     }
     if (!canEdit) return;
@@ -1513,7 +1575,7 @@ export default function App() {
     const selected = (boardData.hexagons || []).filter((hex) => selectedIds.has(hex.id));
     const clones = selected.map((hex) => ({
       ...hex,
-      id: crypto.randomUUID(),
+      id: createId(),
       x: (hex.x || 0) + 40,
       y: (hex.y || 0) + 40,
       connections: []
@@ -1755,7 +1817,9 @@ export default function App() {
                       </div>
                       <div className="panel-item-link">{buildShareUrl(share.token)}</div>
                       <div className="panel-row">
-                        <Button onClick={() => handleCopyShare(share.token)}>Copy</Button>
+                        <Button onClick={() => handleCopyShare(share.token)}>
+                          {copiedShareToken === share.token ? "Copied" : "Copy"}
+                        </Button>
                         <button
                           className="link-button"
                           type="button"
@@ -1934,61 +1998,60 @@ export default function App() {
                         preserveAspectRatio="xMidYMid slice"
                       />
                     ) : null}
-                    {hex.content.type === "video" && mediaSrc ? (
-                      <foreignObject
-                        x={-hexRadius}
-                        y={-hexRadius}
-                        width={hexRadius * 2}
-                        height={hexRadius * 2}
-                      >
-                        <video
-                          id={`media-${hex.id}`}
-                          src={mediaSrc}
-                          controls
-                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    {hex.content.type === "video" ||
+                    hex.content.type === "audio" ||
+                    hex.content.type === "pdf" ? (
+                      <g className="hex-media-placeholder">
+                        <rect
+                          x={-hexRadius + 6}
+                          y={-hexRadius + 10}
+                          width={hexRadius * 2 - 12}
+                          height={hexRadius * 2 - 20}
+                          rx="8"
+                          fill="rgba(255,255,255,0.72)"
                         />
-                      </foreignObject>
-                    ) : null}
-                    {hex.content.type === "audio" && mediaSrc ? (
-                      <foreignObject
-                        x={-hexRadius}
-                        y={-hexRadius}
-                        width={hexRadius * 2}
-                        height={hexRadius * 2}
-                      >
-                        <audio
-                          id={`media-${hex.id}`}
-                          src={mediaSrc}
-                          controls
-                          style={{ width: "100%" }}
-                        />
-                      </foreignObject>
-                    ) : null}
-                    {hex.content.type === "pdf" && mediaSrc ? (
-                      <foreignObject
-                        x={-hexRadius}
-                        y={-hexRadius}
-                        width={hexRadius * 2}
-                        height={hexRadius * 2}
-                      >
-                        <iframe
-                          title={hex.content.name || "PDF"}
-                          src={mediaSrc}
-                          style={{ width: "100%", height: "100%", border: "none" }}
-                        />
-                      </foreignObject>
+                        <text
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize="11"
+                          fill="#0f172a"
+                        >
+                          {hexLabelMap[hex.content.type] || hex.content.type.toUpperCase()}
+                        </text>
+                        <text
+                          y="14"
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize="9"
+                          fill="#475569"
+                        >
+                          Open ⋯
+                        </text>
+                      </g>
                     ) : null}
                     {hex.content.type === "text" || hex.content.type === "hypertext" ? (
-                      <foreignObject
-                        x={-hexRadius}
-                        y={-hexRadius}
-                        width={hexRadius * 2}
-                        height={hexRadius * 2}
-                      >
-                        <div className="hex-text-content">
-                          {hex.content.value || ""}
-                        </div>
-                      </foreignObject>
+                      useSvgTextFallback ? (
+                        <text
+                          className="hex-text-label"
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          fontSize="11"
+                          fill="#0f172a"
+                        >
+                          {truncateLabel(hex.content.value || hex.text || "", 36)}
+                        </text>
+                      ) : (
+                        <foreignObject
+                          x={-hexRadius}
+                          y={-hexRadius}
+                          width={hexRadius * 2}
+                          height={hexRadius * 2}
+                        >
+                          <div xmlns="http://www.w3.org/1999/xhtml" className="hex-text-content">
+                            {hex.content.value || ""}
+                          </div>
+                        </foreignObject>
+                      )
                     ) : null}
                   </g>
                 ) : null}
@@ -2023,7 +2086,11 @@ export default function App() {
                   fontSize="12"
                   fill="#0f172a"
                 >
-                  {hex.content?.type === "text" || hex.content?.type === "hypertext"
+                  {hex.content?.type === "text" ||
+                  hex.content?.type === "hypertext" ||
+                  hex.content?.type === "video" ||
+                  hex.content?.type === "audio" ||
+                  hex.content?.type === "pdf"
                     ? ""
                     : hex.content?.type && hex.content?.type !== "image"
                     ? hexLabelMap[hex.content.type] || hex.content.type.toUpperCase()
@@ -2074,8 +2141,8 @@ export default function App() {
           <div
             className="context-menu"
             style={{ left: contextMenu.x, top: contextMenu.y }}
+            onPointerDown={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
-            onMouseLeave={() => setContextMenu(null)}
           >
             <button onClick={() => openHexModal(contextMenu.targetId)}>Open</button>
             <button onClick={() => setSelectedIds((prev) => {

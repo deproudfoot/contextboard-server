@@ -4,24 +4,47 @@ const STORE_META = "boards_meta";
 const STORE_BOARDS = "boards";
 const STORE_PENDING = "pending_saves";
 
+let dbPromise = null;
+let persistenceRequested = false;
+
 function openDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_META)) {
-        db.createObjectStore(STORE_META, { keyPath: "userId" });
-      }
-      if (!db.objectStoreNames.contains(STORE_BOARDS)) {
-        db.createObjectStore(STORE_BOARDS, { keyPath: "id" });
-      }
-      if (!db.objectStoreNames.contains(STORE_PENDING)) {
-        db.createObjectStore(STORE_PENDING, { keyPath: "boardId" });
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error("Failed to open offline database"));
-  });
+  if (typeof indexedDB === "undefined") {
+    return Promise.reject(new Error("IndexedDB is not available"));
+  }
+  if (!dbPromise) {
+    dbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DB_NAME, DB_VERSION);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains(STORE_META)) {
+          db.createObjectStore(STORE_META, { keyPath: "userId" });
+        }
+        if (!db.objectStoreNames.contains(STORE_BOARDS)) {
+          db.createObjectStore(STORE_BOARDS, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(STORE_PENDING)) {
+          db.createObjectStore(STORE_PENDING, { keyPath: "boardId" });
+        }
+      };
+      request.onsuccess = () => {
+        const db = request.result;
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
+      request.onerror = () => {
+        dbPromise = null;
+        reject(request.error || new Error("Failed to open offline database"));
+      };
+      request.onblocked = () => {
+        dbPromise = null;
+        reject(new Error("Offline database blocked"));
+      };
+    });
+  }
+  return dbPromise;
 }
 
 function idbRequest(request) {
@@ -49,6 +72,62 @@ async function withStore(storeName, mode, fn) {
   });
 }
 
+function isQuotaError(error) {
+  if (!error) return false;
+  if (error.name === "QuotaExceededError") return true;
+  const message = String(error.message || error).toLowerCase();
+  return message.includes("quota") || message.includes("exceeded");
+}
+
+async function evictOldestCachedBoards(keepIds = []) {
+  const keep = new Set(keepIds.filter(Boolean));
+  const boards = await withStore(STORE_BOARDS, "readonly", (store) => idbRequest(store.getAll()));
+  const pending = await getPendingSaves();
+  pending.forEach((item) => keep.add(item.boardId));
+
+  const removable = (boards || [])
+    .filter((board) => board?.id && !keep.has(board.id))
+    .sort((a, b) => (a.cachedAt || 0) - (b.cachedAt || 0));
+
+  const toRemove = removable.slice(0, Math.max(1, Math.ceil(removable.length / 3)));
+  for (const board of toRemove) {
+    await withStore(STORE_BOARDS, "readwrite", (store) => idbRequest(store.delete(board.id)));
+  }
+  return toRemove.length;
+}
+
+async function withQuotaRetry(operation, keepIds = []) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!isQuotaError(error)) throw error;
+    const removed = await evictOldestCachedBoards(keepIds);
+    if (!removed) throw error;
+    return operation();
+  }
+}
+
+export async function isOfflineStorageAvailable() {
+  try {
+    await openDb();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Best-effort persistent storage request (helps on Safari/iOS). */
+export async function requestPersistentStorage() {
+  if (persistenceRequested) return false;
+  persistenceRequested = true;
+  try {
+    if (!navigator?.storage?.persist) return false;
+    return await navigator.storage.persist();
+  } catch {
+    return false;
+  }
+}
+
 export function isNetworkError(error) {
   if (!error) return false;
   if (error.code === "NETWORK") return true;
@@ -69,52 +148,72 @@ export function isOnline() {
 
 export async function cacheBoardList(userId, boards) {
   if (!userId) return;
-  await withStore(STORE_META, "readwrite", (store) =>
-    idbRequest(
-      store.put({
-        userId,
-        boards: Array.isArray(boards) ? boards : [],
-        cachedAt: Date.now()
-      })
-    )
+  await withQuotaRetry(
+    () =>
+      withStore(STORE_META, "readwrite", (store) =>
+        idbRequest(
+          store.put({
+            userId,
+            boards: Array.isArray(boards) ? boards : [],
+            cachedAt: Date.now()
+          })
+        )
+      ),
+    []
   );
 }
 
 export async function getCachedBoardList(userId) {
   if (!userId) return null;
-  const row = await withStore(STORE_META, "readonly", (store) => idbRequest(store.get(userId)));
-  return row?.boards || null;
+  try {
+    const row = await withStore(STORE_META, "readonly", (store) => idbRequest(store.get(userId)));
+    return row?.boards || null;
+  } catch {
+    return null;
+  }
 }
 
 export async function cacheBoard(board) {
   if (!board?.id) return;
-  await withStore(STORE_BOARDS, "readwrite", (store) =>
-    idbRequest(
-      store.put({
-        ...board,
-        cachedAt: Date.now()
-      })
-    )
+  await withQuotaRetry(
+    () =>
+      withStore(STORE_BOARDS, "readwrite", (store) =>
+        idbRequest(
+          store.put({
+            ...board,
+            cachedAt: Date.now()
+          })
+        )
+      ),
+    [board.id]
   );
 }
 
 export async function getCachedBoard(boardId) {
   if (!boardId) return null;
-  return withStore(STORE_BOARDS, "readonly", (store) => idbRequest(store.get(boardId)));
+  try {
+    return await withStore(STORE_BOARDS, "readonly", (store) => idbRequest(store.get(boardId)));
+  } catch {
+    return null;
+  }
 }
 
 export async function enqueueSave(boardId, payload, baseUpdatedAt = null) {
   if (!boardId) return;
-  await withStore(STORE_PENDING, "readwrite", (store) =>
-    idbRequest(
-      store.put({
-        boardId,
-        title: payload.title,
-        data: payload.data,
-        queuedAt: Date.now(),
-        baseUpdatedAt: baseUpdatedAt || null
-      })
-    )
+  await withQuotaRetry(
+    () =>
+      withStore(STORE_PENDING, "readwrite", (store) =>
+        idbRequest(
+          store.put({
+            boardId,
+            title: payload.title,
+            data: payload.data,
+            queuedAt: Date.now(),
+            baseUpdatedAt: baseUpdatedAt || null
+          })
+        )
+      ),
+    [boardId]
   );
   if (payload) {
     const existing = await getCachedBoard(boardId);
@@ -130,12 +229,20 @@ export async function enqueueSave(boardId, payload, baseUpdatedAt = null) {
 }
 
 export async function getPendingSaves() {
-  return withStore(STORE_PENDING, "readonly", (store) => idbRequest(store.getAll()));
+  try {
+    return await withStore(STORE_PENDING, "readonly", (store) => idbRequest(store.getAll()));
+  } catch {
+    return [];
+  }
 }
 
 export async function getPendingSave(boardId) {
   if (!boardId) return null;
-  return withStore(STORE_PENDING, "readonly", (store) => idbRequest(store.get(boardId)));
+  try {
+    return await withStore(STORE_PENDING, "readonly", (store) => idbRequest(store.get(boardId)));
+  } catch {
+    return null;
+  }
 }
 
 export async function clearPendingSave(boardId) {
