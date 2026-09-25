@@ -20,6 +20,13 @@ import {
   addShareComment,
   createUpload
 } from "./api";
+import {
+  facebookCaptureBookmarklet,
+  facebookCaptureConsoleCommand,
+  parseFacebookThread,
+  summarizeThread,
+  threadToHexagons
+} from "./facebookThread";
 
 function Field({ label, ...props }) {
   return (
@@ -35,6 +42,116 @@ function Button({ children, ...props }) {
     <button {...props} className="button">
       {children}
     </button>
+  );
+}
+
+function useCaptureThreadButton(onOpen) {
+  useEffect(() => {
+    const button = document.getElementById("capture-thread-button");
+    if (!button) return undefined;
+    const handleClick = () => onOpen();
+    button.addEventListener("click", handleClick);
+    return () => button.removeEventListener("click", handleClick);
+  }, [onOpen]);
+}
+
+function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
+  const [copyNote, setCopyNote] = useState("");
+  const parsed = parseFacebookThread(paste);
+  const counts = parsed.items ? summarizeThread(parsed.items) : null;
+  const summary = counts
+    ? `${parsed.items.length} tokens · ${counts.post} post, ${counts.comment} ${counts.comment === 1 ? "comment" : "comments"}, ${counts.reply} ${counts.reply === 1 ? "reply" : "replies"}`
+    : "";
+
+  async function copyText(value, note) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNote(note);
+    } catch {
+      setCopyNote("Clipboard was blocked. Select the address below and copy it.");
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Capture a Facebook thread</div>
+          <button className="icon-button" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+        <div className="modal-body">
+          <ol className="thread-steps">
+            <li>Click Copy bookmark address.</li>
+            <li>Press Ctrl+Shift+B to show the bookmarks bar.</li>
+            <li>Right-click the bookmarks bar and choose Add page.</li>
+            <li>Name it Capture thread, paste the address into the URL field, and save.</li>
+            <li>Open the Facebook post, expand the comments, and click Capture thread. Then paste the capture here.</li>
+          </ol>
+          <div className="panel-row">
+            <button
+              className="button"
+              type="button"
+              onClick={() => copyText(bookmarklet, "Bookmark address copied. Add it from the bookmarks bar.")}
+            >
+              Copy bookmark address
+            </button>
+            <button
+              className="button"
+              type="button"
+              onClick={() =>
+                copyText(
+                  facebookCaptureConsoleCommand(),
+                  "Console command copied. On the Facebook post, open the console, paste it, and press Enter."
+                )
+              }
+            >
+              Copy console command
+            </button>
+          </div>
+          {copyNote ? <div className="muted small">{copyNote}</div> : null}
+          <textarea
+            className="thread-address"
+            readOnly
+            aria-label="Capture thread bookmark address"
+            value={bookmarklet}
+          />
+          <div className="muted small">
+            You can also paste comment text copied from the post. Each post, comment, and reply becomes its own token.
+          </div>
+          <textarea
+            aria-label="Facebook thread"
+            placeholder="Paste the captured thread"
+            value={paste}
+            onChange={(event) => onPaste(event.target.value)}
+          />
+          {paste.trim() && parsed.error ? <div className="error">{parsed.error}</div> : null}
+          {summary ? <div className="muted small">{summary}</div> : null}
+          {parsed.items ? (
+            <div className="thread-preview">
+              {parsed.items.map((item, index) => (
+                <div key={`${item.author}-${index}`} className="thread-token">
+                  <div className="thread-role">{item.role}</div>
+                  <div>
+                    <strong>{item.author}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="modal-actions">
+          <button className="button" type="button" onClick={onReadClipboard}>
+            Read clipboard
+          </button>
+          <button className="button" type="button" onClick={onPlace} disabled={!parsed.items}>
+            Place tokens
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -116,6 +233,14 @@ export default function App() {
   const longPressTimerRef = useRef(null);
   const longPressStartRef = useRef(null);
   const [modalHexId, setModalHexId] = useState(null);
+  const [showThreadImport, setShowThreadImport] = useState(false);
+  const [threadPaste, setThreadPaste] = useState("");
+  const threadBookmarklet = useMemo(() => facebookCaptureBookmarklet(), []);
+  const openThreadImport = () => {
+    setErr("");
+    setShowThreadImport(true);
+  };
+  useCaptureThreadButton(openThreadImport);
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
   const [deletedBoard, setDeletedBoard] = useState(null);
@@ -452,6 +577,19 @@ export default function App() {
     setErr("");
   }
 
+  function handleStartThreadCapture() {
+    setErr("");
+    setShowThreadImport(true);
+    const editable = boards.find(
+      (board) => !board.accessRole || board.accessRole === "owner" || board.accessRole === "editor"
+    );
+    if (editable) {
+      openBoard(editable.id);
+      return;
+    }
+    handleCreateBoard();
+  }
+
   async function handleCreateBoard() {
     setErr("");
     try {
@@ -781,6 +919,46 @@ export default function App() {
     setDragState(null);
     setMarqueeStart(null);
     setMarqueeRect(null);
+  }
+
+  function handlePlaceThread() {
+    if (!canEdit) return;
+    const parsed = parseFacebookThread(threadPaste);
+    if (parsed.error) {
+      setErr(parsed.error);
+      return;
+    }
+    const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
+    const svg = canvasRef.current;
+    const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+    const worldX = (rect.width / 2 - pan.x) / zoom;
+    const worldY = (rect.height / 2 - pan.y) / zoom;
+    const created = threadToHexagons(parsed.items, {
+      originX: worldX,
+      originY: worldY - ((parsed.items.length - 1) * (hexRadius * 2 + 18)) / 2,
+      startNumber: maxNumber + 1,
+      hexRadius,
+      snapSize,
+      url: parsed.url
+    });
+    pushHistory({
+      ...boardData,
+      hexagons: [...(boardData.hexagons || []), ...created]
+    });
+    setSelectedIds(new Set(created.map((hex) => hex.id)));
+    setShowThreadImport(false);
+    setThreadPaste("");
+    setErr("");
+  }
+
+  async function handleReadThreadClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setThreadPaste(text || "");
+      setErr("");
+    } catch {
+      setErr("Clipboard access was blocked. Paste the thread into the box.");
+    }
   }
 
   function handleAddHexagon(count = addCount, color = addColor) {
@@ -1378,6 +1556,16 @@ export default function App() {
           </button>
           {canEdit ? (
             <>
+              <button
+                className="icon-button thread-button"
+                onClick={() => {
+                  setErr("");
+                  setShowThreadImport(true);
+                }}
+                aria-label="Capture thread"
+              >
+                Capture thread
+              </button>
               <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
                 💾
               </button>
@@ -1728,7 +1916,8 @@ export default function App() {
                         />
                       </foreignObject>
                     ) : null}
-                    {hex.content.type === "text" || hex.content.type === "hypertext" ? (
+                    {(hex.content.type === "text" || hex.content.type === "hypertext") &&
+                    hex.content.source !== "facebook" ? (
                       <foreignObject
                         x={-hexRadius}
                         y={-hexRadius}
@@ -1773,9 +1962,10 @@ export default function App() {
                   fontSize="12"
                   fill="#0f172a"
                 >
-                  {hex.content?.type === "text" || hex.content?.type === "hypertext"
+                  {(hex.content?.type === "text" || hex.content?.type === "hypertext") &&
+                  hex.content?.source !== "facebook"
                     ? ""
-                    : hex.content?.type && hex.content?.type !== "image"
+                    : hex.content?.type && hex.content?.type !== "image" && hex.content?.source !== "facebook"
                     ? hexLabelMap[hex.content.type] || hex.content.type.toUpperCase()
                     : hex.text || "Hex"}
                 </text>
@@ -1926,6 +2116,16 @@ export default function App() {
             />
           </>
         ) : null}
+        {showThreadImport ? (
+          <ThreadImportModal
+            paste={threadPaste}
+            bookmarklet={threadBookmarklet}
+            onPaste={setThreadPaste}
+            onReadClipboard={handleReadThreadClipboard}
+            onPlace={handlePlaceThread}
+            onClose={() => setShowThreadImport(false)}
+          />
+        ) : null}
         {modalHex ? (
           <div className="modal-overlay" onClick={() => setModalHexId(null)}>
             <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
@@ -1994,6 +2194,16 @@ export default function App() {
   if (user) {
     return (
       <div className="page">
+        {showThreadImport ? (
+          <ThreadImportModal
+            paste={threadPaste}
+            bookmarklet={threadBookmarklet}
+            onPaste={setThreadPaste}
+            onReadClipboard={handleReadThreadClipboard}
+            onPlace={handlePlaceThread}
+            onClose={() => setShowThreadImport(false)}
+          />
+        ) : null}
         <div className="toolbar">
           <h2>My Boards</h2>
           <div className="spacer" />
@@ -2002,6 +2212,13 @@ export default function App() {
         <div className="card">
           <div className="muted">Signed in as</div>
           <div className="email">{user.email}</div>
+        </div>
+        <div className="card thread-home">
+          <h3>Capture thread</h3>
+          <div className="muted">
+            Capture a Facebook post and place each comment on a board as its own token.
+          </div>
+          <Button onClick={handleStartThreadCapture}>Capture thread</Button>
         </div>
         <div className="toolbar">
           <Button onClick={handleCreateBoard}>Create new board</Button>
@@ -2041,6 +2258,16 @@ export default function App() {
 
   return (
     <div className="page">
+      {showThreadImport ? (
+        <ThreadImportModal
+          paste={threadPaste}
+          bookmarklet={threadBookmarklet}
+          onPaste={setThreadPaste}
+          onReadClipboard={handleReadThreadClipboard}
+          onPlace={handlePlaceThread}
+          onClose={() => setShowThreadImport(false)}
+        />
+      ) : null}
       <div className="card">
         <h2>{title}</h2>
         <div className="muted">

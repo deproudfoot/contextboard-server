@@ -1,0 +1,161 @@
+(function () {
+  const API = "https://contextboard-api2.onrender.com";
+  const COLORS = { post: "#4099f2", comment: "#40d940", reply: "#f2d933" };
+  const CAPTURE_SCRIPT =
+    "(function(){var chrome=/^(like|likes|reply|replies|share|comment|comments|send|follow|following|most relevant|newest|all comments|top comments|see more|hide|edited)$/i;var more=/^view( \\d+)? more (comments|replies)$/i;var timeRe=/^(\\d+\\s*[smhdwy]|just now|yesterday|today|\\d+\\s+(second|minute|hour|day|week|month|year)s?(\\s+ago)?)$/i;function clean(value){return String(value||\"\").replace(/\\s+/g,\" \").trim();}function noise(value){return !value||chrome.test(value)||more.test(value)||timeRe.test(value);}var nodes=Array.prototype.slice.call(document.querySelectorAll('[role=\"article\"]'));var found=[];nodes.forEach(function(el){var label=el.getAttribute(\"aria-label\")||\"\";var author=\"\";var commentBy=label.match(/^Comment by (.+?)(?:\\s+\\d|\\s+yesterday|\\s+just now|$)/i);if(commentBy) author=clean(commentBy[1]);var link=el.querySelector('a[role=\"link\"]');if(!author&&link) author=clean(link.innerText).split(\"\\n\")[0];var nested=Array.prototype.slice.call(el.querySelectorAll('[role=\"article\"]'));var dirs=Array.prototype.slice.call(el.querySelectorAll('[dir=\"auto\"]')).filter(function(node){return !nested.some(function(child){return child.contains(node);});});var texts=dirs.map(function(node){return clean(node.innerText);}).filter(function(value){return value&&value!==author&&!noise(value);});texts.sort(function(a,b){return b.length-a.length;});var text=texts[0]||\"\";if(!text) return;var rect=el.getBoundingClientRect();if(rect.width<8||rect.height<8) return;found.push({author:author||\"Facebook\",text:text,left:rect.left,top:rect.top+window.scrollY,comment:!!commentBy});});found.sort(function(a,b){return a.top-b.top||a.left-b.left;});var unique=[];found.forEach(function(item){var dup=unique.some(function(prev){return prev.author===item.author&&prev.text===item.text;});if(!dup) unique.push(item);});if(!unique.length){alert(\"No post or comments were visible. Open the Facebook post, expand the comments, then capture again.\");return;}var base=Math.min.apply(null, unique.map(function(item){return item.left;}));var items=[];unique.forEach(function(item){var depth=item.left>base+36?1:0;var parentIndex=null;if(depth>0){for(var i=items.length-1;i>=0;i-=1){if((items[i].depth||0)<depth){parentIndex=i;break;}}}var role=depth>0?\"reply\":(item.comment?\"comment\":(items.length===0?\"post\":\"comment\"));items.push({author:item.author,text:item.text,role:role,parentIndex:parentIndex,depth:depth});});var payload={source:\"facebook\",url:location.href,items:items.map(function(item){return {author:item.author,text:item.text,role:item.role,parentIndex:item.parentIndex};})};var json=JSON.stringify(payload,null,2);var done=function(){alert(\"Captured \"+items.length+\" tokens. Return to Contextboard and paste them.\");};if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(json).then(done).catch(function(){window.prompt(\"Copy this thread\",json);});}else{window.prompt(\"Copy this thread\",json);}})();";
+  const bookmarklet = "javascript:" + encodeURIComponent(CAPTURE_SCRIPT);
+
+  function parseFacebookThread(raw) {
+    const text = String(raw || "").replace(/^\uFEFF/, "").trim();
+    if (!text) return { error: "Paste a captured thread first." };
+    if (/^https?:\/\/((www|m|web|mbasic)\.)?facebook\.com\/\S+$/i.test(text) || /^https?:\/\/fb\.watch\/\S+$/i.test(text)) {
+      return { error: "A Facebook link does not include the comments. Open the post, expand the comments, then capture them." };
+    }
+    if (text.startsWith("{") || text.startsWith("[")) {
+      try {
+        const data = JSON.parse(text);
+        const source = Array.isArray(data) ? { items: data } : data;
+        const items = (source.items || []).map((item) => ({
+          author: String(item.author || "Facebook").trim() || "Facebook",
+          text: String(item.text || item.message || "").trim(),
+          role: item.role || "comment",
+          parentIndex: Number.isInteger(item.parentIndex) ? item.parentIndex : null
+        })).filter((item) => item.text);
+        if (!items.length) return { error: "That capture did not include any comment text." };
+        items.forEach((item, index) => {
+          if (item.role !== "post" && item.parentIndex == null && index > 0) item.parentIndex = 0;
+        });
+        return { items, url: source.url || null };
+      } catch {
+        return { error: "That capture is not valid JSON." };
+      }
+    }
+    return { error: "Paste the captured thread JSON, or comment text copied from the post." };
+  }
+
+  function threadToHexagons(items, startNumber, url) {
+    const ids = items.map(() => crypto.randomUUID());
+    return items.map((item, index) => {
+      const hex = {
+        id: ids[index],
+        number: startNumber + index,
+        x: item.role === "reply" ? 80 : 0,
+        y: index * 90,
+        text: item.author,
+        fillColor: COLORS[item.role] || COLORS.comment,
+        connections: [],
+        content: { type: "text", value: item.text, source: "facebook", role: item.role, author: item.author, url: item.url || url }
+      };
+      return hex;
+    }).map((hex, index, hexagons) => {
+      const parentIndex = items[index].parentIndex;
+      if (parentIndex != null && hexagons[parentIndex]) {
+        hexagons[parentIndex].connections = [...(hexagons[parentIndex].connections || []), hex.id];
+      }
+      return hex;
+    });
+  }
+
+  function style() {
+    const css = document.createElement("style");
+    css.textContent = `
+      #capture-thread-button{position:fixed;top:16px;left:16px;z-index:2147483647;background:#1877f2;color:#fff;font-size:20px;font-weight:800;font-family:Inter,system-ui,sans-serif;padding:14px 18px;border:3px solid #fff;border-radius:12px;cursor:pointer;box-shadow:0 10px 28px rgba(15,23,42,.35)}
+      #capture-thread-modal{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:24px}
+      #capture-thread-modal .sheet{width:min(720px,96vw);max-height:88vh;overflow:auto;background:#fff;border-radius:16px;padding:20px;font-family:Inter,system-ui,sans-serif;color:#0f172a}
+      #capture-thread-modal textarea{width:100%;min-height:120px;margin:8px 0;padding:10px;border:1px solid #cbd5f5;border-radius:10px}
+      #capture-thread-modal button{margin-right:8px;padding:10px 14px;border-radius:10px;border:1px solid #cbd5f5;background:#fff;cursor:pointer;font-weight:600}
+    `;
+    document.head.appendChild(css);
+  }
+
+  function openModal() {
+    if (document.getElementById("capture-thread-modal")) return;
+    const modal = document.createElement("div");
+    modal.id = "capture-thread-modal";
+    modal.innerHTML = `
+      <div class="sheet">
+        <h2>Capture a Facebook thread</h2>
+        <ol>
+          <li>Click Copy bookmark address.</li>
+          <li>Press Ctrl+Shift+B, right-click the bookmarks bar, choose Add page.</li>
+          <li>Name it Capture thread, paste the address, and save.</li>
+          <li>On the Facebook post, expand the comments and click Capture thread.</li>
+        </ol>
+        <button type="button" id="copy-bookmark">Copy bookmark address</button>
+        <textarea id="thread-paste" placeholder="Paste the captured thread"></textarea>
+        <div id="thread-status"></div>
+        <button type="button" id="place-tokens">Place tokens</button>
+        <button type="button" id="close-thread">Close</button>
+      </div>
+    `;
+    modal.addEventListener("click", (event) => {
+      if (event.target === modal) modal.remove();
+    });
+    document.body.appendChild(modal);
+    modal.querySelector("#close-thread").onclick = () => modal.remove();
+    modal.querySelector("#copy-bookmark").onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(bookmarklet);
+        modal.querySelector("#thread-status").textContent = "Bookmark address copied. Add it from the bookmarks bar.";
+      } catch {
+        modal.querySelector("#thread-status").textContent = bookmarklet;
+      }
+    };
+    modal.querySelector("#place-tokens").onclick = () => placeTokens(modal);
+  }
+
+  async function placeTokens(modal) {
+    const parsed = parseFacebookThread(modal.querySelector("#thread-paste").value);
+    const status = modal.querySelector("#thread-status");
+    if (parsed.error) {
+      status.textContent = parsed.error;
+      return;
+    }
+    const token = localStorage.getItem("contextboard_token");
+    if (!token) {
+      status.textContent = "Sign in first, then place the tokens on a board.";
+      return;
+    }
+    try {
+      const list = await fetch(`${API}/boards`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!list.ok) throw new Error("Could not read boards.");
+      const body = await list.json();
+      const boards = body.boards || [];
+      if (!boards.length) throw new Error("Create a board first, then place the tokens.");
+      const board = boards[0];
+      const current = await fetch(`${API}/boards/${board.id}`, { headers: { Authorization: `Bearer ${token}` } });
+      if (!current.ok) throw new Error("Could not open the board.");
+      const detail = await current.json();
+      const data = detail.board?.data || { hexagons: [] };
+      const startNumber = Math.max(0, ...(data.hexagons || []).map((hex) => hex.number || 0)) + 1;
+      const created = threadToHexagons(parsed.items, startNumber, parsed.url);
+      const next = { ...data, hexagons: [...(data.hexagons || []), ...created] };
+      const saved = await fetch(`${API}/boards/${board.id}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ title: detail.board?.title, data: next })
+      });
+      if (!saved.ok) throw new Error("Could not save the tokens.");
+      status.textContent = `Placed ${created.length} tokens on ${detail.board?.title || "the board"}. Reload the board to see them.`;
+      window.dispatchEvent(new CustomEvent("contextboard:thread-tokens", { detail: created }));
+    } catch (error) {
+      status.textContent = error.message || "Could not place the tokens.";
+    }
+  }
+
+  function start() {
+    style();
+    const button = document.createElement("button");
+    button.id = "capture-thread-button";
+    button.type = "button";
+    button.textContent = "Capture thread";
+    button.onclick = openModal;
+    document.body.appendChild(button);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start);
+  } else {
+    start();
+  }
+})();
