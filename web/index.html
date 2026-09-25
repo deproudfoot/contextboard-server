@@ -5,33 +5,8 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Contextboard</title>
-    <style>
-      #capture-thread-button {
-        position: fixed;
-        top: 16px;
-        left: 16px;
-        z-index: 2147483647;
-        background: #1877f2;
-        color: #ffffff;
-        font-size: 20px;
-        font-weight: 800;
-        font-family: "Inter", system-ui, sans-serif;
-        line-height: 1.2;
-        padding: 14px 18px;
-        border: 3px solid #ffffff;
-        border-radius: 12px;
-        cursor: grab;
-        touch-action: none;
-        user-select: none;
-        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.35);
-      }
-      #capture-thread-button.dragging {
-        cursor: grabbing;
-      }
-    </style>
   </head>
   <body>
-    <button id="capture-thread-button" type="button">Capture thread</button>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
