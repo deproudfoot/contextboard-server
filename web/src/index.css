@@ -599,9 +599,25 @@ textarea {
 .thread-button {
   font-size: 13px;
   font-weight: 700;
-  border: 1px solid #cbd5f5;
+  border: 1px solid #1877f2;
   border-radius: 10px;
-  background: #ffffff;
+  background: #1877f2;
+  color: #ffffff;
+  white-space: nowrap;
+}
+
+.thread-home {
+  text-align: left;
+  display: grid;
+  gap: 12px;
+}
+
+.thread-home h3 {
+  margin: 0;
+}
+
+.board-topbar {
+  flex-wrap: wrap;
 }
 
 .thread-steps {

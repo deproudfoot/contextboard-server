@@ -562,6 +562,19 @@ export default function App() {
     setErr("");
   }
 
+  function handleStartThreadCapture() {
+    setErr("");
+    setShowThreadImport(true);
+    const editable = boards.find(
+      (board) => !board.accessRole || board.accessRole === "owner" || board.accessRole === "editor"
+    );
+    if (editable) {
+      openBoard(editable.id);
+      return;
+    }
+    handleCreateBoard();
+  }
+
   async function handleCreateBoard() {
     setErr("");
     try {
@@ -1534,9 +1547,9 @@ export default function App() {
                   setErr("");
                   setShowThreadImport(true);
                 }}
-                aria-label="Capture Facebook thread"
+                aria-label="Capture thread"
               >
-                Thread
+                Capture thread
               </button>
               <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
                 💾
@@ -2174,6 +2187,13 @@ export default function App() {
         <div className="card">
           <div className="muted">Signed in as</div>
           <div className="email">{user.email}</div>
+        </div>
+        <div className="card thread-home">
+          <h3>Capture thread</h3>
+          <div className="muted">
+            Capture a Facebook post and place each comment on a board as its own token.
+          </div>
+          <Button onClick={handleStartThreadCapture}>Capture thread</Button>
         </div>
         <div className="toolbar">
           <Button onClick={handleCreateBoard}>Create new board</Button>
