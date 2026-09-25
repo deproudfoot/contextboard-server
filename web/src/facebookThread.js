@@ -183,6 +183,17 @@ function parsePlainThread(text) {
   );
 }
 
+export function layoutTokenGrid(index, count, originX, originY, hexRadius = 36, snapSize = 20) {
+  const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
+  const spacing = hexRadius * 2.2;
+  const col = index % cols;
+  const row = Math.floor(index / cols);
+  return {
+    x: Math.round((originX + col * spacing) / snapSize) * snapSize,
+    y: Math.round((originY + row * spacing) / snapSize) * snapSize
+  };
+}
+
 export function threadToHexagons(items, options = {}) {
   const hexRadius = options.hexRadius ?? 36;
   const snapSize = options.snapSize ?? 20;
@@ -191,17 +202,10 @@ export function threadToHexagons(items, options = {}) {
   const startNumber = options.startNumber ?? 1;
   const createId = options.createId || (() => crypto.randomUUID());
   const threadUrl = options.url || null;
-  const spacingX = Math.round((hexRadius * Math.sqrt(3) + 16) / snapSize) * snapSize;
-  const spacingY = Math.round((hexRadius * 2 + 18) / snapSize) * snapSize;
   const ids = items.map(() => createId());
-  let row = 0;
-  const depths = items.map((item) => (item.role === "reply" ? 1 : 0));
 
   const hexagons = items.map((item, index) => {
-    const depth = depths[index];
-    const x = Math.round((originX + depth * spacingX) / snapSize) * snapSize;
-    const y = Math.round((originY + row * spacingY) / snapSize) * snapSize;
-    row += 1;
+    const { x, y } = layoutTokenGrid(index, items.length, originX, originY, hexRadius, snapSize);
     return {
       id: ids[index],
       number: startNumber + index,

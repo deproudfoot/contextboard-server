@@ -23,6 +23,7 @@ import {
 import {
   facebookCaptureBookmarklet,
   facebookCaptureConsoleCommand,
+  layoutTokenGrid,
   parseFacebookThread,
   summarizeThread,
   threadToHexagons
@@ -410,6 +411,30 @@ export default function App() {
       wsRef.current = null;
     };
   }, [activeBoardId, token]);
+
+  useEffect(() => {
+    const onThreadTokens = (event) => {
+      const detail = event.detail || {};
+      if (detail.boardId && activeBoardId && detail.boardId !== activeBoardId) return;
+      if (detail.data && Array.isArray(detail.data.hexagons)) {
+        suppressBroadcastRef.current = true;
+        setBoardData(detail.data);
+        if (Array.isArray(detail.created)) {
+          setSelectedIds(new Set(detail.created.map((hex) => hex.id)));
+        }
+        return;
+      }
+      if (Array.isArray(detail.created) && detail.created.length) {
+        setBoardData((prev) => ({
+          ...prev,
+          hexagons: [...(prev.hexagons || []), ...detail.created]
+        }));
+        setSelectedIds(new Set(detail.created.map((hex) => hex.id)));
+      }
+    };
+    window.addEventListener("contextboard:thread-tokens", onThreadTokens);
+    return () => window.removeEventListener("contextboard:thread-tokens", onThreadTokens);
+  }, [activeBoardId]);
 
   function queueBoardBroadcast(nextData) {
     if (!canEdit) return;
@@ -1002,7 +1027,7 @@ export default function App() {
     const worldY = (rect.height / 2 - pan.y) / zoom;
     const created = threadToHexagons(parsed.items, {
       originX: worldX,
-      originY: worldY - ((parsed.items.length - 1) * (hexRadius * 2 + 18)) / 2,
+      originY: worldY,
       startNumber: maxNumber + 1,
       hexRadius,
       snapSize,
@@ -1016,6 +1041,9 @@ export default function App() {
     setShowThreadImport(false);
     setThreadPaste("");
     setErr("");
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText("").catch(() => {});
+    }
   }
 
   async function handleReadThreadClipboard() {
@@ -1037,16 +1065,13 @@ export default function App() {
     const worldX = (center.x - pan.x) / zoom;
     const worldY = (center.y - pan.y) / zoom;
     const hexagons = [...(boardData.hexagons || [])];
-    const cols = Math.ceil(Math.sqrt(count));
-    const spacing = hexRadius * 2.2;
     for (let i = 0; i < count; i += 1) {
-      const row = Math.floor(i / cols);
-      const col = i % cols;
+      const { x, y } = layoutTokenGrid(i, count, worldX, worldY, hexRadius, snapSize);
       hexagons.push({
         id: crypto.randomUUID(),
         number: maxNumber + 1 + i,
-        x: Math.round((worldX + col * spacing) / snapSize) * snapSize,
-        y: Math.round((worldY + row * spacing) / snapSize) * snapSize,
+        x,
+        y,
         text: "New",
         fillColor: color,
         connections: [],
