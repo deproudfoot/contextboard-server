@@ -46,83 +46,6 @@ function Button({ children, ...props }) {
   );
 }
 
-function useCaptureThreadButton(onOpen) {
-  useEffect(() => {
-    const button = document.getElementById("capture-thread-button");
-    if (!button) return undefined;
-    const key = "contextboard_capture_thread_position";
-    const place = (left, top) => {
-      const maxLeft = Math.max(8, window.innerWidth - button.offsetWidth - 8);
-      const maxTop = Math.max(8, window.innerHeight - button.offsetHeight - 8);
-      button.style.left = `${Math.min(maxLeft, Math.max(8, left))}px`;
-      button.style.top = `${Math.min(maxTop, Math.max(8, top))}px`;
-      button.style.right = "auto";
-      button.style.bottom = "auto";
-    };
-    try {
-      const saved = JSON.parse(localStorage.getItem(key) || "null");
-      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
-        place(saved.left, saved.top);
-      }
-    } catch {
-      // keep default
-    }
-    let drag = null;
-    const onPointerDown = (event) => {
-      if (event.button != null && event.button !== 0) return;
-      const rect = button.getBoundingClientRect();
-      drag = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        left: rect.left,
-        top: rect.top,
-        moved: false
-      };
-      button.setPointerCapture(event.pointerId);
-      button.classList.add("dragging");
-    };
-    const onPointerMove = (event) => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const dx = event.clientX - drag.startX;
-      const dy = event.clientY - drag.startY;
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
-      if (drag.moved) place(drag.left + dx, drag.top + dy);
-    };
-    const onPointerUp = (event) => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const moved = drag.moved;
-      if (moved) {
-        localStorage.setItem(
-          key,
-          JSON.stringify({ left: parseFloat(button.style.left), top: parseFloat(button.style.top) })
-        );
-      }
-      button.classList.remove("dragging");
-      try {
-        button.releasePointerCapture(event.pointerId);
-      } catch {
-        // already released
-      }
-      drag = null;
-      if (!moved) onOpen();
-    };
-    const onClick = (event) => event.preventDefault();
-    button.addEventListener("pointerdown", onPointerDown);
-    button.addEventListener("pointermove", onPointerMove);
-    button.addEventListener("pointerup", onPointerUp);
-    button.addEventListener("pointercancel", onPointerUp);
-    button.addEventListener("click", onClick);
-    return () => {
-      button.removeEventListener("pointerdown", onPointerDown);
-      button.removeEventListener("pointermove", onPointerMove);
-      button.removeEventListener("pointerup", onPointerUp);
-      button.removeEventListener("pointercancel", onPointerUp);
-      button.removeEventListener("click", onClick);
-    };
-  }, [onOpen]);
-}
-
 function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
   const [copyNote, setCopyNote] = useState("");
   const parsed = parseFacebookThread(paste);
@@ -308,7 +231,6 @@ export default function App() {
     setErr("");
     setShowThreadImport(true);
   };
-  useCaptureThreadButton(openThreadImport);
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
   const [deletedBoard, setDeletedBoard] = useState(null);
@@ -2299,6 +2221,7 @@ export default function App() {
         <div className="toolbar">
           <h2>My Boards</h2>
           <div className="spacer" />
+          <Button onClick={openThreadImport}>Capture thread</Button>
           <Button onClick={logout}>Log out</Button>
         </div>
         <div className="card">
