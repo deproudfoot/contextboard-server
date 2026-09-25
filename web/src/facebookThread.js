@@ -306,3 +306,7 @@ const CAPTURE_SCRIPT = `(function(){
 export function facebookCaptureBookmarklet() {
   return `javascript:${encodeURIComponent(CAPTURE_SCRIPT)}`;
 }
+
+export function facebookCaptureConsoleCommand() {
+  return CAPTURE_SCRIPT;
+}

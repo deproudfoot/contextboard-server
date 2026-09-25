@@ -22,6 +22,7 @@ import {
 } from "./api";
 import {
   facebookCaptureBookmarklet,
+  facebookCaptureConsoleCommand,
   parseFacebookThread,
   summarizeThread,
   threadToHexagons
@@ -45,11 +46,22 @@ function Button({ children, ...props }) {
 }
 
 function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
+  const [copyNote, setCopyNote] = useState("");
   const parsed = parseFacebookThread(paste);
   const counts = parsed.items ? summarizeThread(parsed.items) : null;
   const summary = counts
     ? `${parsed.items.length} tokens · ${counts.post} post, ${counts.comment} ${counts.comment === 1 ? "comment" : "comments"}, ${counts.reply} ${counts.reply === 1 ? "reply" : "replies"}`
     : "";
+
+  async function copyText(value, note) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNote(note);
+    } catch {
+      setCopyNote("Clipboard was blocked. Select the address below and copy it.");
+    }
+  }
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
@@ -61,18 +73,40 @@ function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPla
         </div>
         <div className="modal-body">
           <ol className="thread-steps">
-            <li>Drag Capture thread onto your bookmarks bar.</li>
-            <li>Open the Facebook post and expand the comments you want.</li>
-            <li>Click the bookmark, then paste the capture here.</li>
+            <li>Click Copy bookmark address.</li>
+            <li>Press Ctrl+Shift+B to show the bookmarks bar.</li>
+            <li>Right-click the bookmarks bar and choose Add page.</li>
+            <li>Name it Capture thread, paste the address into the URL field, and save.</li>
+            <li>Open the Facebook post, expand the comments, and click Capture thread. Then paste the capture here.</li>
           </ol>
-          <a
-            className="thread-bookmark"
-            href={bookmarklet}
-            draggable="true"
-            onClick={(event) => event.preventDefault()}
-          >
-            Capture thread
-          </a>
+          <div className="panel-row">
+            <button
+              className="button"
+              type="button"
+              onClick={() => copyText(bookmarklet, "Bookmark address copied. Add it from the bookmarks bar.")}
+            >
+              Copy bookmark address
+            </button>
+            <button
+              className="button"
+              type="button"
+              onClick={() =>
+                copyText(
+                  facebookCaptureConsoleCommand(),
+                  "Console command copied. On the Facebook post, open the console, paste it, and press Enter."
+                )
+              }
+            >
+              Copy console command
+            </button>
+          </div>
+          {copyNote ? <div className="muted small">{copyNote}</div> : null}
+          <textarea
+            className="thread-address"
+            readOnly
+            aria-label="Capture thread bookmark address"
+            value={bookmarklet}
+          />
           <div className="muted small">
             You can also paste comment text copied from the post. Each post, comment, and reply becomes its own token.
           </div>

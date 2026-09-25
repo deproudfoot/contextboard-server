@@ -611,17 +611,10 @@ textarea {
   font-size: 13px;
 }
 
-.thread-bookmark {
-  display: inline-flex;
-  align-items: center;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #1877f2;
-  color: #ffffff;
-  font-weight: 700;
-  font-size: 13px;
-  text-decoration: none;
-  width: fit-content;
+.thread-address {
+  min-height: 72px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
 }
 
 .thread-preview {
