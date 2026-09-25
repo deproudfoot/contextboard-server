@@ -20,6 +20,12 @@ import {
   addShareComment,
   createUpload
 } from "./api";
+import {
+  facebookCaptureBookmarklet,
+  parseFacebookThread,
+  summarizeThread,
+  threadToHexagons
+} from "./facebookThread";
 
 function Field({ label, ...props }) {
   return (
@@ -35,6 +41,73 @@ function Button({ children, ...props }) {
     <button {...props} className="button">
       {children}
     </button>
+  );
+}
+
+function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
+  const parsed = parseFacebookThread(paste);
+  const counts = parsed.items ? summarizeThread(parsed.items) : null;
+  const summary = counts
+    ? `${parsed.items.length} tokens · ${counts.post} post, ${counts.comment} comments, ${counts.reply} replies`
+    : "";
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Capture a Facebook thread</div>
+          <button className="icon-button" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+        <div className="modal-body">
+          <ol className="thread-steps">
+            <li>Drag Capture thread onto your bookmarks bar.</li>
+            <li>Open the Facebook post and expand the comments you want.</li>
+            <li>Click the bookmark, then paste the capture here.</li>
+          </ol>
+          <a
+            className="thread-bookmark"
+            href={bookmarklet}
+            draggable="true"
+            onClick={(event) => event.preventDefault()}
+          >
+            Capture thread
+          </a>
+          <div className="muted small">
+            You can also paste comment text copied from the post. Each post, comment, and reply becomes its own token.
+          </div>
+          <textarea
+            aria-label="Facebook thread"
+            placeholder="Paste the captured thread"
+            value={paste}
+            onChange={(event) => onPaste(event.target.value)}
+          />
+          {paste.trim() && parsed.error ? <div className="error">{parsed.error}</div> : null}
+          {summary ? <div className="muted small">{summary}</div> : null}
+          {parsed.items ? (
+            <div className="thread-preview">
+              {parsed.items.map((item, index) => (
+                <div key={`${item.author}-${index}`} className="thread-token">
+                  <div className="thread-role">{item.role}</div>
+                  <div>
+                    <strong>{item.author}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="modal-actions">
+          <button className="button" type="button" onClick={onReadClipboard}>
+            Read clipboard
+          </button>
+          <button className="button" type="button" onClick={onPlace} disabled={!parsed.items}>
+            Place tokens
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -116,6 +189,9 @@ export default function App() {
   const longPressTimerRef = useRef(null);
   const longPressStartRef = useRef(null);
   const [modalHexId, setModalHexId] = useState(null);
+  const [showThreadImport, setShowThreadImport] = useState(false);
+  const [threadPaste, setThreadPaste] = useState("");
+  const threadBookmarklet = useMemo(() => facebookCaptureBookmarklet(), []);
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
   const [deletedBoard, setDeletedBoard] = useState(null);
@@ -783,6 +859,46 @@ export default function App() {
     setMarqueeRect(null);
   }
 
+  function handlePlaceThread() {
+    if (!canEdit) return;
+    const parsed = parseFacebookThread(threadPaste);
+    if (parsed.error) {
+      setErr(parsed.error);
+      return;
+    }
+    const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
+    const svg = canvasRef.current;
+    const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+    const worldX = (rect.width / 2 - pan.x) / zoom;
+    const worldY = (rect.height / 2 - pan.y) / zoom;
+    const created = threadToHexagons(parsed.items, {
+      originX: worldX,
+      originY: worldY - ((parsed.items.length - 1) * (hexRadius * 2 + 18)) / 2,
+      startNumber: maxNumber + 1,
+      hexRadius,
+      snapSize,
+      url: parsed.url
+    });
+    pushHistory({
+      ...boardData,
+      hexagons: [...(boardData.hexagons || []), ...created]
+    });
+    setSelectedIds(new Set(created.map((hex) => hex.id)));
+    setShowThreadImport(false);
+    setThreadPaste("");
+    setErr("");
+  }
+
+  async function handleReadThreadClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setThreadPaste(text || "");
+      setErr("");
+    } catch {
+      setErr("Clipboard access was blocked. Paste the thread into the box.");
+    }
+  }
+
   function handleAddHexagon(count = addCount, color = addColor) {
     if (!canEdit) return;
     const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
@@ -1378,6 +1494,16 @@ export default function App() {
           </button>
           {canEdit ? (
             <>
+              <button
+                className="icon-button thread-button"
+                onClick={() => {
+                  setErr("");
+                  setShowThreadImport(true);
+                }}
+                aria-label="Capture Facebook thread"
+              >
+                Thread
+              </button>
               <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
                 💾
               </button>
@@ -1925,6 +2051,16 @@ export default function App() {
               onChange={(e) => handleMediaChange(e.target.files?.[0], "file")}
             />
           </>
+        ) : null}
+        {showThreadImport ? (
+          <ThreadImportModal
+            paste={threadPaste}
+            bookmarklet={threadBookmarklet}
+            onPaste={setThreadPaste}
+            onReadClipboard={handleReadThreadClipboard}
+            onPlace={handlePlaceThread}
+            onClose={() => setShowThreadImport(false)}
+          />
         ) : null}
         {modalHex ? (
           <div className="modal-overlay" onClick={() => setModalHexId(null)}>
