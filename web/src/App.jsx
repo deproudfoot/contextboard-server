@@ -48,7 +48,7 @@ function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPla
   const parsed = parseFacebookThread(paste);
   const counts = parsed.items ? summarizeThread(parsed.items) : null;
   const summary = counts
-    ? `${parsed.items.length} tokens · ${counts.post} post, ${counts.comment} comments, ${counts.reply} replies`
+    ? `${parsed.items.length} tokens · ${counts.post} post, ${counts.comment} ${counts.comment === 1 ? "comment" : "comments"}, ${counts.reply} ${counts.reply === 1 ? "reply" : "replies"}`
     : "";
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -1854,7 +1854,8 @@ export default function App() {
                         />
                       </foreignObject>
                     ) : null}
-                    {hex.content.type === "text" || hex.content.type === "hypertext" ? (
+                    {(hex.content.type === "text" || hex.content.type === "hypertext") &&
+                    hex.content.source !== "facebook" ? (
                       <foreignObject
                         x={-hexRadius}
                         y={-hexRadius}
@@ -1899,9 +1900,10 @@ export default function App() {
                   fontSize="12"
                   fill="#0f172a"
                 >
-                  {hex.content?.type === "text" || hex.content?.type === "hypertext"
+                  {(hex.content?.type === "text" || hex.content?.type === "hypertext") &&
+                  hex.content?.source !== "facebook"
                     ? ""
-                    : hex.content?.type && hex.content?.type !== "image"
+                    : hex.content?.type && hex.content?.type !== "image" && hex.content?.source !== "facebook"
                     ? hexLabelMap[hex.content.type] || hex.content.type.toUpperCase()
                     : hex.text || "Hex"}
                 </text>

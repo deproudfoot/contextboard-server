@@ -61,12 +61,13 @@ function cleanItems(items) {
     const depth = Number.isFinite(item.depth) ? item.depth : 0;
     const mappedParent = indexMap.has(item.parentIndex) ? indexMap.get(item.parentIndex) : null;
     const role = normalizeRole(item.role, index, depth);
-    const parentIndex = role === "post" ? null : mappedParent;
+    let parentIndex = role === "post" ? null : mappedParent;
+    if (parentIndex === null && role !== "post" && index > 0) parentIndex = 0;
     return {
       author: String(item.author || "Facebook").trim() || "Facebook",
       text: item.text,
       role,
-      parentIndex: role === "reply" || depth > 0 ? parentIndex : role === "comment" ? parentIndex : null,
+      parentIndex,
       url: item.url || null
     };
   });
@@ -201,7 +202,6 @@ export function threadToHexagons(items, options = {}) {
     const x = Math.round((originX + depth * spacingX) / snapSize) * snapSize;
     const y = Math.round((originY + row * spacingY) / snapSize) * snapSize;
     row += 1;
-    const body = `${item.author}\n\n${item.text}`;
     return {
       id: ids[index],
       number: startNumber + index,
@@ -212,7 +212,7 @@ export function threadToHexagons(items, options = {}) {
       connections: [],
       content: {
         type: "text",
-        value: body,
+        value: item.text,
         source: "facebook",
         role: item.role,
         author: item.author,
