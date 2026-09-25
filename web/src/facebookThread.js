@@ -207,7 +207,7 @@ export function threadToHexagons(items, options = {}) {
       number: startNumber + index,
       x,
       y,
-      text: item.author,
+      text: item.text,
       fillColor: COLORS[item.role] || COLORS.comment,
       connections: [],
       content: {
