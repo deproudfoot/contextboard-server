@@ -175,9 +175,9 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [boards, setBoards] = useState([]);
   const [activeBoardId, setActiveBoardId] = useState(null);
-  const [activeBoard, setActiveBoard] = useState(null);
+  const [_activeBoard, setActiveBoard] = useState(null);
   const [activeBoardRole, setActiveBoardRole] = useState("owner");
-  const [activeBoardOwnerEmail, setActiveBoardOwnerEmail] = useState(null);
+  const [_activeBoardOwnerEmail, setActiveBoardOwnerEmail] = useState(null);
   const [boardTitle, setBoardTitle] = useState("");
   const [boardData, setBoardData] = useState({ hexagons: [] });
   const [sharedView, setSharedView] = useState(false);
@@ -991,7 +991,7 @@ export default function App() {
     setShowAddMenu(false);
   }
 
-  function handleLabelChange(value) {
+  function _handleLabelChange(value) {
     if (!canEdit) return;
     pushHistory({
       ...boardData,
@@ -1200,7 +1200,7 @@ export default function App() {
     setHexContent(id, { type: "text", value: "New Text" });
   }
 
-  function handleSetHypertext(id) {
+  function _handleSetHypertext(id) {
     setHexContent(id, { type: "hypertext", value: "Visit https://openai.com" });
   }
 
