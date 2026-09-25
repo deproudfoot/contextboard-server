@@ -45,6 +45,24 @@ function Button({ children, ...props }) {
   );
 }
 
+function ThreadLink({ bookmarklet, onOpen }) {
+  return (
+    <div className="thread-banner">
+      <a
+        className="thread-link"
+        href={bookmarklet}
+        onClick={(event) => {
+          event.preventDefault();
+          onOpen();
+        }}
+      >
+        Capture thread
+      </a>
+      <span>Facebook thread link</span>
+    </div>
+  );
+}
+
 function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
   const [copyNote, setCopyNote] = useState("");
   const parsed = parseFacebookThread(paste);
@@ -1513,6 +1531,7 @@ export default function App() {
     };
     return (
       <div className="board-shell">
+        <ThreadLink bookmarklet={threadBookmarklet} onOpen={() => setShowThreadImport(true)} />
         <div className="board-topbar">
           <Button onClick={() => (sharedView ? exitSharedView() : setActiveBoardId(null))}>
             Back
@@ -2179,6 +2198,17 @@ export default function App() {
   if (user) {
     return (
       <div className="page">
+        <ThreadLink bookmarklet={threadBookmarklet} onOpen={() => setShowThreadImport(true)} />
+        {showThreadImport ? (
+          <ThreadImportModal
+            paste={threadPaste}
+            bookmarklet={threadBookmarklet}
+            onPaste={setThreadPaste}
+            onReadClipboard={handleReadThreadClipboard}
+            onPlace={handlePlaceThread}
+            onClose={() => setShowThreadImport(false)}
+          />
+        ) : null}
         <div className="toolbar">
           <h2>My Boards</h2>
           <div className="spacer" />
@@ -2233,6 +2263,17 @@ export default function App() {
 
   return (
     <div className="page">
+      <ThreadLink bookmarklet={threadBookmarklet} onOpen={() => setShowThreadImport(true)} />
+      {showThreadImport ? (
+        <ThreadImportModal
+          paste={threadPaste}
+          bookmarklet={threadBookmarklet}
+          onPaste={setThreadPaste}
+          onReadClipboard={handleReadThreadClipboard}
+          onPlace={handlePlaceThread}
+          onClose={() => setShowThreadImport(false)}
+        />
+      ) : null}
       <div className="card">
         <h2>{title}</h2>
         <div className="muted">

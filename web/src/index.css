@@ -596,6 +596,33 @@ textarea {
   border-top: 1px solid #e2e8f0;
 }
 
+.thread-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  background: #1877f2;
+  color: #ffffff;
+  border-radius: 12px;
+  text-align: left;
+}
+
+.board-shell > .thread-banner {
+  margin: 0;
+  border-radius: 0;
+}
+
+.thread-link {
+  color: #ffffff;
+  background: #0b5ed7;
+  font-size: 18px;
+  font-weight: 800;
+  text-decoration: underline;
+  padding: 8px 14px;
+  border-radius: 999px;
+}
+
 .thread-button {
   font-size: 13px;
   font-weight: 700;
