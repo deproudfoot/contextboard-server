@@ -45,12 +45,14 @@ function Button({ children, ...props }) {
   );
 }
 
-function ThreadLink({ onOpen }) {
-  return (
-    <button type="button" className="thread-fixed-button" onClick={onOpen}>
-      Capture thread
-    </button>
-  );
+function useCaptureThreadButton(onOpen) {
+  useEffect(() => {
+    const button = document.getElementById("capture-thread-button");
+    if (!button) return undefined;
+    const handleClick = () => onOpen();
+    button.addEventListener("click", handleClick);
+    return () => button.removeEventListener("click", handleClick);
+  }, [onOpen]);
 }
 
 function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
@@ -234,6 +236,11 @@ export default function App() {
   const [showThreadImport, setShowThreadImport] = useState(false);
   const [threadPaste, setThreadPaste] = useState("");
   const threadBookmarklet = useMemo(() => facebookCaptureBookmarklet(), []);
+  const openThreadImport = () => {
+    setErr("");
+    setShowThreadImport(true);
+  };
+  useCaptureThreadButton(openThreadImport);
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
   const [deletedBoard, setDeletedBoard] = useState(null);
@@ -1521,7 +1528,6 @@ export default function App() {
     };
     return (
       <div className="board-shell">
-        <ThreadLink onOpen={() => setShowThreadImport(true)} />
         <div className="board-topbar">
           <Button onClick={() => (sharedView ? exitSharedView() : setActiveBoardId(null))}>
             Back
@@ -2188,7 +2194,6 @@ export default function App() {
   if (user) {
     return (
       <div className="page">
-        <ThreadLink onOpen={() => setShowThreadImport(true)} />
         {showThreadImport ? (
           <ThreadImportModal
             paste={threadPaste}
@@ -2253,7 +2258,6 @@ export default function App() {
 
   return (
     <div className="page">
-      <ThreadLink onOpen={() => setShowThreadImport(true)} />
       {showThreadImport ? (
         <ThreadImportModal
           paste={threadPaste}
