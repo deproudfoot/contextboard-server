@@ -77,9 +77,10 @@
         <h2>Capture a Facebook thread</h2>
         <ol>
           <li>Click Copy bookmark address.</li>
-          <li>Press Ctrl+Shift+B, right-click the bookmarks bar, choose Add page.</li>
-          <li>Name it Capture thread, paste the address, and save.</li>
-          <li>On the Facebook post, expand the comments and click Capture thread.</li>
+          <li>On your Mac, press Command-Shift-B to show the bookmarks bar under the address field.</li>
+          <li>Control-click that bar, or two-finger click it, and choose Add Page.</li>
+          <li>Name it Capture thread. Paste into the address field. Click Save.</li>
+          <li>Open the Facebook post, expand the comments, then click Capture thread on the bookmarks bar.</li>
         </ol>
         <button type="button" id="copy-bookmark">Copy bookmark address</button>
         <textarea id="thread-paste" placeholder="Paste the captured thread"></textarea>

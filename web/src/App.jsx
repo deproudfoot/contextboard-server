@@ -84,10 +84,10 @@ function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPla
         <div className="modal-body">
           <ol className="thread-steps">
             <li>Click Copy bookmark address.</li>
-            <li>Press Ctrl+Shift+B to show the bookmarks bar.</li>
-            <li>Right-click the bookmarks bar and choose Add page.</li>
-            <li>Name it Capture thread, paste the address into the URL field, and save.</li>
-            <li>Open the Facebook post, expand the comments, and click Capture thread. Then paste the capture here.</li>
+            <li>On your Mac, press Command-Shift-B to show the bookmarks bar under the address field.</li>
+            <li>Control-click that bar, or two-finger click it, and choose Add Page.</li>
+            <li>Name it Capture thread. Paste into the address field. Click Save.</li>
+            <li>Open the Facebook post, expand the comments, then click Capture thread on the bookmarks bar. Paste the capture here.</li>
           </ol>
           <div className="panel-row">
             <button
