@@ -23,12 +23,12 @@ services:
           property: connectionString
   - type: static
     name: contextboard-web
-    rootDir: deploy/live-with-thread
-    buildCommand: echo "Publishing the live Contextboard snapshot with Capture thread"
-    staticPublishPath: .
+    rootDir: web
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
     envVars:
       - key: VITE_API_BASE
-        value: https://contextboard-api2.onrender.com
+        value: https://contextboard-api.onrender.com
 
 databases:
   - name: contextboard-db
