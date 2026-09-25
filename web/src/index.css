@@ -596,31 +596,21 @@ textarea {
   border-top: 1px solid #e2e8f0;
 }
 
-.thread-banner {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 16px;
-  padding: 12px 14px;
+.thread-fixed-button {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 10000;
   background: #1877f2;
   color: #ffffff;
-  border-radius: 12px;
-  text-align: left;
-}
-
-.board-shell > .thread-banner {
-  margin: 0;
-  border-radius: 0;
-}
-
-.thread-link {
-  color: #ffffff;
-  background: #0b5ed7;
-  font-size: 18px;
+  font-size: 20px;
   font-weight: 800;
-  text-decoration: underline;
-  padding: 8px 14px;
-  border-radius: 999px;
+  line-height: 1.2;
+  padding: 14px 18px;
+  border: 3px solid #ffffff;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.35);
 }
 
 .thread-button {

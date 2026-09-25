@@ -45,21 +45,11 @@ function Button({ children, ...props }) {
   );
 }
 
-function ThreadLink({ bookmarklet, onOpen }) {
+function ThreadLink({ onOpen }) {
   return (
-    <div className="thread-banner">
-      <a
-        className="thread-link"
-        href={bookmarklet}
-        onClick={(event) => {
-          event.preventDefault();
-          onOpen();
-        }}
-      >
-        Capture thread
-      </a>
-      <span>Facebook thread link</span>
-    </div>
+    <button type="button" className="thread-fixed-button" onClick={onOpen}>
+      Capture thread
+    </button>
   );
 }
 
@@ -1531,7 +1521,7 @@ export default function App() {
     };
     return (
       <div className="board-shell">
-        <ThreadLink bookmarklet={threadBookmarklet} onOpen={() => setShowThreadImport(true)} />
+        <ThreadLink onOpen={() => setShowThreadImport(true)} />
         <div className="board-topbar">
           <Button onClick={() => (sharedView ? exitSharedView() : setActiveBoardId(null))}>
             Back
@@ -2198,7 +2188,7 @@ export default function App() {
   if (user) {
     return (
       <div className="page">
-        <ThreadLink bookmarklet={threadBookmarklet} onOpen={() => setShowThreadImport(true)} />
+        <ThreadLink onOpen={() => setShowThreadImport(true)} />
         {showThreadImport ? (
           <ThreadImportModal
             paste={threadPaste}
@@ -2263,7 +2253,7 @@ export default function App() {
 
   return (
     <div className="page">
-      <ThreadLink bookmarklet={threadBookmarklet} onOpen={() => setShowThreadImport(true)} />
+      <ThreadLink onOpen={() => setShowThreadImport(true)} />
       {showThreadImport ? (
         <ThreadImportModal
           paste={threadPaste}
