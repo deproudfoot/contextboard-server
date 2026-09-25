@@ -166,8 +166,7 @@
   function style() {
     const css = document.createElement("style");
     css.textContent = `
-      #capture-thread-button{position:fixed;top:16px;left:16px;z-index:2147483647;background:#1877f2;color:#fff;font-size:20px;font-weight:800;font-family:Inter,system-ui,sans-serif;padding:14px 18px;border:3px solid #fff;border-radius:12px;cursor:grab;box-shadow:0 10px 28px rgba(15,23,42,.35);touch-action:none;user-select:none}
-      #capture-thread-button.dragging{cursor:grabbing}
+      #capture-thread-button.thread-capture-bar{position:static;inset:auto;z-index:6;margin:0;background:#1877f2;color:#fff;font-size:13px;font-weight:700;font-family:inherit;line-height:1.2;padding:6px 10px;border:1px solid #1877f2;border-radius:10px;cursor:pointer;box-shadow:none;white-space:nowrap;touch-action:auto;user-select:none}
       #capture-thread-modal{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:24px}
       #capture-thread-modal .sheet{width:min(720px,96vw);max-height:88vh;overflow:auto;background:#fff;border-radius:16px;padding:20px;font-family:Inter,system-ui,sans-serif;color:#0f172a}
       #capture-thread-modal textarea{width:100%;min-height:120px;margin:8px 0;padding:10px;border:1px solid #cbd5f5;border-radius:10px}
@@ -328,68 +327,30 @@
     }
   }
 
-  function makeButtonMoveable(button, onClick) {
-    const key = "contextboard_capture_thread_position";
-    const saved = (() => {
-      try {
-        return JSON.parse(localStorage.getItem(key) || "null");
-      } catch {
-        return null;
-      }
-    })();
-    const place = (left, top) => {
-      const maxLeft = Math.max(8, window.innerWidth - button.offsetWidth - 8);
-      const maxTop = Math.max(8, window.innerHeight - button.offsetHeight - 8);
-      button.style.left = `${Math.min(maxLeft, Math.max(8, left))}px`;
-      button.style.top = `${Math.min(maxTop, Math.max(8, top))}px`;
-      button.style.right = "auto";
-      button.style.bottom = "auto";
-    };
-    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
-      place(saved.left, saved.top);
+  function mountOnMenuBar(button) {
+    const topbar = document.querySelector(".board-topbar");
+    if (topbar) {
+      if (button.parentElement === topbar) return true;
+      button.className = "icon-button thread-capture-bar";
+      const save = topbar.querySelector('[aria-label="Save"]');
+      const spacer = topbar.querySelector(".spacer");
+      if (save) topbar.insertBefore(button, save);
+      else if (spacer && spacer.nextSibling) topbar.insertBefore(button, spacer.nextSibling);
+      else topbar.appendChild(button);
+      return true;
     }
-    let drag = null;
-    const onPointerDown = (event) => {
-      if (event.button != null && event.button !== 0) return;
-      const rect = button.getBoundingClientRect();
-      drag = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        left: rect.left,
-        top: rect.top,
-        moved: false
-      };
-      button.setPointerCapture(event.pointerId);
-      button.classList.add("dragging");
-    };
-    const onPointerMove = (event) => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const dx = event.clientX - drag.startX;
-      const dy = event.clientY - drag.startY;
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
-      if (drag.moved) place(drag.left + dx, drag.top + dy);
-    };
-    const onPointerUp = (event) => {
-      if (!drag || event.pointerId !== drag.pointerId) return;
-      const moved = drag.moved;
-      if (moved) {
-        localStorage.setItem(key, JSON.stringify({ left: parseFloat(button.style.left), top: parseFloat(button.style.top) }));
-      }
-      button.classList.remove("dragging");
-      try {
-        button.releasePointerCapture(event.pointerId);
-      } catch {
-        // already released
-      }
-      drag = null;
-      if (!moved) onClick();
-    };
-    button.addEventListener("pointerdown", onPointerDown);
-    button.addEventListener("pointermove", onPointerMove);
-    button.addEventListener("pointerup", onPointerUp);
-    button.addEventListener("pointercancel", onPointerUp);
-    button.addEventListener("click", (event) => event.preventDefault());
+    const homeToolbar = [...document.querySelectorAll(".toolbar")].find((bar) =>
+      /log out|admin/i.test(bar.textContent || "")
+    );
+    if (homeToolbar) {
+      if (button.parentElement === homeToolbar) return true;
+      button.className = "button thread-capture-bar";
+      const logout = [...homeToolbar.querySelectorAll("button")].find((el) => /log out/i.test(el.textContent || ""));
+      if (logout) homeToolbar.insertBefore(button, logout);
+      else homeToolbar.appendChild(button);
+      return true;
+    }
+    return false;
   }
 
   function start() {
@@ -398,8 +359,23 @@
     button.id = "capture-thread-button";
     button.type = "button";
     button.textContent = "Capture thread";
-    document.body.appendChild(button);
-    makeButtonMoveable(button, openModal);
+    button.setAttribute("aria-label", "Capture thread");
+    button.title = "Capture a Facebook thread";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openModal();
+    });
+    const mount = () => {
+      mountOnMenuBar(button);
+    };
+    mount();
+    const observer = new MutationObserver(() => {
+      if (!button.isConnected || !button.closest(".board-topbar, .toolbar")) {
+        mount();
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.readyState === "loading") {
