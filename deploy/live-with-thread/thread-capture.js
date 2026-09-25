@@ -91,13 +91,20 @@
   }
 
   function threadToHexagons(items, startNumber, originX, originY, url) {
+    const hexRadius = 36;
+    const snapSize = 20;
+    const spacing = hexRadius * 2.2;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(items.length)));
+    const snap = (value) => Math.round(value / snapSize) * snapSize;
     const ids = items.map(() => crypto.randomUUID());
     return items.map((item, index) => {
+      const col = index % cols;
+      const row = Math.floor(index / cols);
       const hex = {
         id: ids[index],
         number: startNumber + index,
-        x: Math.round((originX + (item.role === "reply" ? 90 : 0)) / 20) * 20,
-        y: Math.round((originY + index * 90) / 20) * 20,
+        x: snap(originX + col * spacing),
+        y: snap(originY + row * spacing),
         text: item.text,
         fillColor: COLORS[item.role] || COLORS.comment,
         connections: [],
@@ -117,6 +124,42 @@
         hexagons[parentIndex].connections = [...(hexagons[parentIndex].connections || []), hex.id];
       }
       return hex;
+    });
+  }
+
+  function pushBoardUpdate(boardId, token, data) {
+    return new Promise((resolve) => {
+      const socket = new WebSocket(
+        `wss://contextboard-api2.onrender.com/ws?boardId=${encodeURIComponent(boardId)}&token=${encodeURIComponent(token)}`
+      );
+      const sender = crypto.randomUUID();
+      const finish = () => {
+        try {
+          socket.close();
+        } catch {
+          // already closed
+        }
+        resolve();
+      };
+      const timer = window.setTimeout(finish, 2500);
+      socket.addEventListener("open", () => {
+        socket.send(
+          JSON.stringify({
+            type: "board_update",
+            boardId,
+            data,
+            sender
+          })
+        );
+        window.setTimeout(() => {
+          window.clearTimeout(timer);
+          finish();
+        }, 300);
+      });
+      socket.addEventListener("error", () => {
+        window.clearTimeout(timer);
+        finish();
+      });
     });
   }
 
@@ -206,12 +249,28 @@
   }
 
   function pickBoard(boards) {
-    const title = document.querySelector(".title-input, input.title-input")?.value?.trim();
-    if (title) {
-      const match = boards.find((board) => (board.title || "") === title);
-      if (match) return match;
+    const titleInput = document.querySelector(".title-input, input.title-input, .board-title input");
+    if (!titleInput) return null;
+    const title = String(titleInput.value || "").trim();
+    const matches = boards.filter((board) => String(board.title || "").trim() === title);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      return matches.slice().sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))[0];
     }
-    return boards[0];
+    return null;
+  }
+
+  async function clearClipboard() {
+    if (!navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText("");
+    } catch {
+      try {
+        await navigator.clipboard.writeText(" ");
+      } catch {
+        // clipboard may be blocked
+      }
+    }
   }
 
   async function placeTokens(modal) {
@@ -232,6 +291,7 @@
       const boards = (await list.json()).boards || [];
       if (!boards.length) throw new Error("Create or open a board first.");
       const board = pickBoard(boards);
+      if (!board) throw new Error("Stay on the open board, then place the tokens.");
       const current = await fetch(`${API}/boards/${board.id}`, { headers: { Authorization: `Bearer ${token}` } });
       if (!current.ok) throw new Error("Could not open the board.");
       const detail = await current.json();
@@ -254,9 +314,15 @@
         body: JSON.stringify({ title: detail.board?.title, data: next })
       });
       if (!saved.ok) throw new Error("Could not save the tokens.");
-      status.textContent = `Placed ${created.length} tokens on ${detail.board?.title || "the board"}. Opening them now.`;
-      window.dispatchEvent(new CustomEvent("contextboard:thread-tokens", { detail: created }));
-      window.location.reload();
+      await pushBoardUpdate(board.id, token, next);
+      await clearClipboard();
+      modal.querySelector("#thread-paste").value = "";
+      window.dispatchEvent(
+        new CustomEvent("contextboard:thread-tokens", {
+          detail: { created, boardId: board.id, data: next }
+        })
+      );
+      modal.remove();
     } catch (error) {
       status.textContent = error.message || "Could not place the tokens.";
     }
