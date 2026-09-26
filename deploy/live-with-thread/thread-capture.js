@@ -174,6 +174,32 @@
       #thread-preview{display:grid;gap:8px;margin:12px 0}
       #thread-preview .token{display:grid;grid-template-columns:72px 1fr;gap:8px;padding:8px 10px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc}
       #thread-preview .role{font-size:11px;font-weight:800;text-transform:uppercase;color:#475569}
+      .modal-overlay:has(.modal-text) .modal-sheet,
+      .modal-overlay:has(.modal-media) .modal-sheet,
+      .modal-overlay:has(.modal-textarea) .modal-sheet,
+      .modal-overlay:has(.hex-hypertext-preview--modal) .modal-sheet,
+      .modal-sheet.modal-token{
+        width:75vw!important;height:75vh!important;max-width:75vw!important;max-height:75vh!important
+      }
+      .modal-overlay:has(.modal-text) .modal-body,
+      .modal-overlay:has(.modal-media) .modal-body,
+      .modal-overlay:has(.modal-textarea) .modal-body,
+      .modal-overlay:has(.hex-hypertext-preview--modal) .modal-body,
+      .modal-sheet.modal-token .modal-body{
+        flex:1;min-height:0;display:flex;flex-direction:column
+      }
+      .modal-overlay:has(.modal-text) .modal-text,
+      .modal-sheet.modal-token .modal-text,
+      .modal-overlay:has(.modal-textarea) .modal-textarea,
+      .modal-sheet.modal-token .modal-textarea{
+        flex:1;width:100%;height:100%;min-height:0;overflow:auto;resize:none;
+        font-size:clamp(20px,3.2vmin,48px);line-height:1.45
+      }
+      .modal-overlay:has(.modal-media) .modal-media,
+      .modal-sheet.modal-token .modal-media,
+      .modal-overlay:has(.hex-hypertext-preview--modal) .hex-hypertext-preview--modal{
+        flex:1;max-height:none;min-height:0;height:100%
+      }
     `;
     document.head.appendChild(css);
   }
@@ -366,14 +392,28 @@
       event.stopPropagation();
       openModal();
     });
+    const isTokenSheet = (sheet) => {
+      if (!sheet || !sheet.classList.contains("modal-sheet")) return false;
+      if (sheet.closest("#capture-thread-modal")) return false;
+      return Boolean(
+        sheet.querySelector(".modal-text, .modal-media, .modal-textarea, .hex-hypertext-preview--modal")
+      );
+    };
+    const markTokenModals = () => {
+      document.querySelectorAll(".modal-overlay .modal-sheet").forEach((sheet) => {
+        if (isTokenSheet(sheet)) sheet.classList.add("modal-token");
+      });
+    };
     const mount = () => {
       mountOnMenuBar(button);
+      markTokenModals();
     };
     mount();
     const observer = new MutationObserver(() => {
       if (!button.isConnected || !button.closest(".board-topbar, .toolbar")) {
-        mount();
+        mountOnMenuBar(button);
       }
+      markTokenModals();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }

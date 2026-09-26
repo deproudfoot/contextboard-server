@@ -2142,7 +2142,7 @@ export default function App() {
         ) : null}
         {modalHex ? (
           <div className="modal-overlay" onClick={() => setModalHexId(null)}>
-            <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-sheet modal-token" onClick={(event) => event.stopPropagation()}>
               <div className="modal-header">
                 <div className="modal-title">{modalTitle}</div>
                 <button className="icon-button" onClick={() => setModalHexId(null)} aria-label="Close">
