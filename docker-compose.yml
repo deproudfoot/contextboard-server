@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: contextboard
+      POSTGRES_PASSWORD: contextboard
+      POSTGRES_DB: contextboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U contextboard"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build:
+      context: ./api
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://contextboard:contextboard@db:5432/contextboard
+      JWT_SECRET: dev-jwt-secret-contextboard
+      INVITE_ALLOWLIST: "test@example.com"
+      PORT: "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./api/src:/app/src
+      - ./api/prisma:/app/prisma
+
+  web:
+    build:
+      context: ./web
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_BASE: http://localhost:3000
+    volumes:
+      - ./web/src:/app/src
+      - ./web/public:/app/public
+
+volumes:
+  pgdata:
