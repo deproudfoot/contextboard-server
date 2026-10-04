@@ -90,6 +90,24 @@ export function me() {
   return request("/me");
 }
 
+export function changePassword(currentPassword, newPassword) {
+  return request("/me/password", {
+    method: "PATCH",
+    body: JSON.stringify({ currentPassword, newPassword })
+  });
+}
+
+export function listAdminUsers() {
+  return request("/admin/users");
+}
+
+export function adminSetPassword(userId, newPassword) {
+  return request(`/admin/users/${userId}/password`, {
+    method: "PATCH",
+    body: JSON.stringify({ newPassword })
+  });
+}
+
 export function listBoards() {
   return request("/boards");
 }

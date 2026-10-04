@@ -354,6 +354,22 @@ textarea {
   margin-top: 6px;
 }
 
+.success {
+  color: #166534;
+  font-size: 13px;
+  margin: 8px 0;
+}
+
+.password-form {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.settings-panel .password-form {
+  min-width: 240px;
+}
+
 .error {
   color: #b91c1c;
   background: #fee2e2;
