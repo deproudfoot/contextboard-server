@@ -8,7 +8,8 @@
     "dev": "nodemon src/index.js",
     "build": "echo \"no build step\"",
     "start": "node src/index.js",
-    "migrate": "prisma migrate deploy"
+    "migrate": "prisma migrate deploy",
+    "set-password": "node scripts/set-password.mjs"
   },
   "keywords": [],
   "author": "",

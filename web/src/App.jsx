@@ -3,6 +3,9 @@ import {
   login,
   register,
   me,
+  changePassword,
+  listAdminUsers,
+  adminSetPassword,
   setToken,
   getToken,
   listBoards,
@@ -43,6 +46,74 @@ function Button({ children, ...props }) {
     <button {...props} className="button">
       {children}
     </button>
+  );
+}
+
+function ChangePasswordForm({ onChanged }) {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    setError("");
+    setNote("");
+    if (newPassword !== confirmPassword) {
+      setError("New passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setNote("Password updated.");
+      onChanged?.();
+    } catch (err) {
+      setError(err.message || "Unable to change password.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="password-form" onSubmit={handleSubmit}>
+      <Field
+        label="Current password"
+        type="password"
+        autoComplete="current-password"
+        value={currentPassword}
+        onChange={(event) => setCurrentPassword(event.target.value)}
+        required
+      />
+      <Field
+        label="New password"
+        type="password"
+        autoComplete="new-password"
+        value={newPassword}
+        onChange={(event) => setNewPassword(event.target.value)}
+        minLength={6}
+        required
+      />
+      <Field
+        label="Confirm new password"
+        type="password"
+        autoComplete="new-password"
+        value={confirmPassword}
+        onChange={(event) => setConfirmPassword(event.target.value)}
+        minLength={6}
+        required
+      />
+      {error ? <div className="error">{error}</div> : null}
+      {note ? <div className="success">{note}</div> : null}
+      <Button type="submit" disabled={busy}>
+        {busy ? "Updating…" : "Change password"}
+      </Button>
+    </form>
   );
 }
 
@@ -312,6 +383,10 @@ export default function App() {
   const [modalText, setModalText] = useState("");
   const [modalTextLoading, setModalTextLoading] = useState(false);
   const [deletedBoard, setDeletedBoard] = useState(null);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [adminPasswordUserId, setAdminPasswordUserId] = useState("");
+  const [adminNewPassword, setAdminNewPassword] = useState("");
+  const [adminNote, setAdminNote] = useState("");
   const deleteTimerRef = useRef(null);
 
   const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
@@ -373,6 +448,16 @@ export default function App() {
     if (!user) return;
     listBoards()
       .then((response) => setBoards(response.boards || []))
+      .catch((e) => setErr(e.message));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user?.isAdmin) {
+      setAdminUsers([]);
+      return;
+    }
+    listAdminUsers()
+      .then((response) => setAdminUsers(response.users || []))
       .catch((e) => setErr(e.message));
   }, [user]);
 
@@ -651,6 +736,23 @@ export default function App() {
     if (deleteTimerRef.current) {
       clearTimeout(deleteTimerRef.current);
       deleteTimerRef.current = null;
+    }
+  }
+
+  async function handleAdminSetPassword(event) {
+    event.preventDefault();
+    setAdminNote("");
+    setErr("");
+    if (!adminPasswordUserId || adminNewPassword.length < 6) {
+      setErr("Choose a user and a new password of at least 6 characters.");
+      return;
+    }
+    try {
+      const result = await adminSetPassword(adminPasswordUserId, adminNewPassword);
+      setAdminNewPassword("");
+      setAdminNote(`Password updated for ${result.email}.`);
+    } catch (error) {
+      setErr(error.message || "Unable to set that password.");
     }
   }
 
@@ -1731,6 +1833,8 @@ export default function App() {
         </div>
         {showSettings ? (
           <div className="settings-panel">
+            <div className="panel-title">Change password</div>
+            <ChangePasswordForm />
             <label className="toggle">
               <input
                 type="checkbox"
@@ -2304,7 +2408,52 @@ export default function App() {
         <div className="card">
           <div className="muted">Signed in as</div>
           <div className="email">{user.email}</div>
+          {user.isAdmin ? <div className="muted small">Admin</div> : null}
         </div>
+        <div className="card">
+          <h3>Change password</h3>
+          <div className="muted">
+            {user.isAdmin
+              ? "Update the admin password for this account."
+              : "Update the password for this account."}
+          </div>
+          <ChangePasswordForm />
+        </div>
+        {user.isAdmin ? (
+          <div className="card">
+            <h3>Admin passwords</h3>
+            <div className="muted">Set a new password for any user, including the admin account.</div>
+            <form className="password-form" onSubmit={handleAdminSetPassword}>
+              <label className="field">
+                <div className="field-label">User</div>
+                <select
+                  value={adminPasswordUserId}
+                  onChange={(event) => setAdminPasswordUserId(event.target.value)}
+                  required
+                >
+                  <option value="">Select a user</option>
+                  {adminUsers.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.email}
+                      {item.isAdmin ? " (admin)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <Field
+                label="New password"
+                type="password"
+                autoComplete="new-password"
+                value={adminNewPassword}
+                onChange={(event) => setAdminNewPassword(event.target.value)}
+                minLength={6}
+                required
+              />
+              {adminNote ? <div className="success">{adminNote}</div> : null}
+              <Button type="submit">Set password</Button>
+            </form>
+          </div>
+        ) : null}
         <div className="card thread-home">
           <h3>Capture thread</h3>
           <div className="muted">

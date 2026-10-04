@@ -84,6 +84,44 @@ function isInvited(email) {
   return allowlist.includes(email.toLowerCase());
 }
 
+function adminEmailList() {
+  return String(process.env.ADMIN_EMAILS || "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+async function isAdminUser(user) {
+  if (!user?.email) return false;
+  const emails = adminEmailList();
+  if (emails.length) return emails.includes(user.email.toLowerCase());
+  const first = await prisma.user.findFirst({
+    orderBy: { createdAt: "asc" },
+    select: { id: true }
+  });
+  return first?.id === user.id;
+}
+
+function validateNewPassword(password) {
+  if (!password || typeof password !== "string" || password.length < 6) {
+    return "New password must be at least 6 characters.";
+  }
+  return null;
+}
+
+async function requireAdmin(req, res, next) {
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.userId } });
+    if (!user || !(await isAdminUser(user))) {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    req.adminUser = user;
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+}
+
 function isEditor(role) {
   return role === "owner" || role === "editor";
 }
@@ -178,7 +216,64 @@ app.get("/me", authMiddleware, async (req, res) => {
   if (!user) {
     return res.status(404).json({ error: "User not found" });
   }
-  return res.json({ id: user.id, email: user.email, createdAt: user.createdAt });
+  return res.json({
+    id: user.id,
+    email: user.email,
+    createdAt: user.createdAt,
+    isAdmin: await isAdminUser(user)
+  });
+});
+
+app.patch("/me/password", authMiddleware, async (req, res) => {
+  const { currentPassword, newPassword } = req.body ?? {};
+  const invalid = validateNewPassword(newPassword);
+  if (invalid) {
+    return res.status(400).json({ error: invalid });
+  }
+  if (!currentPassword) {
+    return res.status(400).json({ error: "Current password is required" });
+  }
+  const user = await prisma.user.findUnique({ where: { id: req.userId } });
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  const ok = await bcrypt.compare(currentPassword, user.password);
+  if (!ok) {
+    return res.status(401).json({ error: "Current password is incorrect" });
+  }
+  const hashed = await bcrypt.hash(newPassword, 10);
+  await prisma.user.update({ where: { id: user.id }, data: { password: hashed } });
+  return res.json({ ok: true });
+});
+
+app.get("/admin/users", authMiddleware, requireAdmin, async (_req, res) => {
+  const users = await prisma.user.findMany({
+    orderBy: { createdAt: "asc" },
+    select: { id: true, email: true, createdAt: true }
+  });
+  const emails = adminEmailList();
+  const firstId = users[0]?.id;
+  return res.json({
+    users: users.map((item) => ({
+      ...item,
+      isAdmin: emails.length ? emails.includes(item.email.toLowerCase()) : item.id === firstId
+    }))
+  });
+});
+
+app.patch("/admin/users/:id/password", authMiddleware, requireAdmin, async (req, res) => {
+  const { newPassword } = req.body ?? {};
+  const invalid = validateNewPassword(newPassword);
+  if (invalid) {
+    return res.status(400).json({ error: invalid });
+  }
+  const user = await prisma.user.findUnique({ where: { id: req.params.id } });
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  const hashed = await bcrypt.hash(newPassword, 10);
+  await prisma.user.update({ where: { id: user.id }, data: { password: hashed } });
+  return res.json({ ok: true, email: user.email });
 });
 
 app.get("/boards", authMiddleware, async (req, res) => {
