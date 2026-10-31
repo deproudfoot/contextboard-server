@@ -1,0 +1,2523 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  desktopSession,
+  getApiBase,
+  login,
+  register,
+  me,
+  setToken,
+  getToken,
+  listBoards,
+  createBoard,
+  getBoard,
+  updateBoard,
+  deleteBoard,
+  listShares,
+  createShare,
+  deleteShare,
+  listCollaborators,
+  addCollaborator,
+  removeCollaborator,
+  getSharedBoard,
+  addShareComment,
+  createUpload
+} from "./api";
+import {
+  facebookCaptureBookmarklet,
+  facebookCaptureConsoleCommand,
+  parseFacebookThread,
+  summarizeThread,
+  threadToHexagons
+} from "./facebookThread";
+import {
+  desktopBackup,
+  desktopDataPath,
+  desktopRestore,
+  desktopReveal,
+  isDesktop
+} from "./desktop";
+
+function Field({ label, ...props }) {
+  return (
+    <label className="field">
+      <div className="field-label">{label}</div>
+      <input {...props} />
+    </label>
+  );
+}
+
+function Button({ children, ...props }) {
+  return (
+    <button {...props} className="button">
+      {children}
+    </button>
+  );
+}
+
+function LibraryActions({ onNote, onError }) {
+  const [busy, setBusy] = useState(false);
+
+  async function run(action, doneNote) {
+    setBusy(true);
+    try {
+      const result = await action();
+      if (result?.canceled) return;
+      if (result?.error) {
+        onError(result.error);
+        return;
+      }
+      if (doneNote) onNote(doneNote(result));
+    } catch (error) {
+      onError(error.message || "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="library-actions">
+      <Button
+        type="button"
+        disabled={busy}
+        onClick={() =>
+          run(desktopBackup, (result) => `Backup saved to ${result.path}`)
+        }
+      >
+        Backup
+      </Button>
+      <Button type="button" disabled={busy} onClick={() => run(desktopReveal)}>
+        Reveal folder
+      </Button>
+      <Button
+        type="button"
+        disabled={busy}
+        onClick={() => run(desktopRestore, () => "Library restored")}
+      >
+        Restore
+      </Button>
+    </div>
+  );
+}
+
+function useCaptureThreadButton(onOpen) {
+  useEffect(() => {
+    const button = document.getElementById("capture-thread-button");
+    if (!button) return undefined;
+    const key = "contextboard_capture_thread_position";
+    const place = (left, top) => {
+      const maxLeft = Math.max(8, window.innerWidth - button.offsetWidth - 8);
+      const maxTop = Math.max(8, window.innerHeight - button.offsetHeight - 8);
+      button.style.left = `${Math.min(maxLeft, Math.max(8, left))}px`;
+      button.style.top = `${Math.min(maxTop, Math.max(8, top))}px`;
+      button.style.right = "auto";
+      button.style.bottom = "auto";
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem(key) || "null");
+      if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+        place(saved.left, saved.top);
+      }
+    } catch {
+      // keep default
+    }
+    let drag = null;
+    const onPointerDown = (event) => {
+      if (event.button != null && event.button !== 0) return;
+      const rect = button.getBoundingClientRect();
+      drag = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        left: rect.left,
+        top: rect.top,
+        moved: false
+      };
+      button.setPointerCapture(event.pointerId);
+      button.classList.add("dragging");
+    };
+    const onPointerMove = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const dx = event.clientX - drag.startX;
+      const dy = event.clientY - drag.startY;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
+      if (drag.moved) place(drag.left + dx, drag.top + dy);
+    };
+    const onPointerUp = (event) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const moved = drag.moved;
+      if (moved) {
+        localStorage.setItem(
+          key,
+          JSON.stringify({ left: parseFloat(button.style.left), top: parseFloat(button.style.top) })
+        );
+      }
+      button.classList.remove("dragging");
+      try {
+        button.releasePointerCapture(event.pointerId);
+      } catch {
+        // already released
+      }
+      drag = null;
+      if (!moved) onOpen();
+    };
+    const onClick = (event) => event.preventDefault();
+    button.addEventListener("pointerdown", onPointerDown);
+    button.addEventListener("pointermove", onPointerMove);
+    button.addEventListener("pointerup", onPointerUp);
+    button.addEventListener("pointercancel", onPointerUp);
+    button.addEventListener("click", onClick);
+    return () => {
+      button.removeEventListener("pointerdown", onPointerDown);
+      button.removeEventListener("pointermove", onPointerMove);
+      button.removeEventListener("pointerup", onPointerUp);
+      button.removeEventListener("pointercancel", onPointerUp);
+      button.removeEventListener("click", onClick);
+    };
+  }, [onOpen]);
+}
+
+function ThreadImportModal({ paste, bookmarklet, onPaste, onReadClipboard, onPlace, onClose }) {
+  const [copyNote, setCopyNote] = useState("");
+  const parsed = parseFacebookThread(paste);
+  const counts = parsed.items ? summarizeThread(parsed.items) : null;
+  const summary = counts
+    ? `${parsed.items.length} tokens · ${counts.post} post, ${counts.comment} ${counts.comment === 1 ? "comment" : "comments"}, ${counts.reply} ${counts.reply === 1 ? "reply" : "replies"}`
+    : "";
+
+  async function copyText(value, note) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNote(note);
+    } catch {
+      setCopyNote("Clipboard was blocked. Select the address below and copy it.");
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">Capture a Facebook thread</div>
+          <button className="icon-button" onClick={onClose} aria-label="Close">
+            ✕
+          </button>
+        </div>
+        <div className="modal-body">
+          <ol className="thread-steps">
+            <li>Click Copy bookmark address.</li>
+            <li>On your Mac, press Command-Shift-B to show the bookmarks bar under the address field.</li>
+            <li>Control-click that bar, or two-finger click it, and choose Add Page.</li>
+            <li>Name it Capture thread. Paste into the address field. Click Save.</li>
+            <li>Open the Facebook post, expand the comments, then click Capture thread on the bookmarks bar. Paste the capture here.</li>
+          </ol>
+          <div className="panel-row">
+            <button
+              className="button"
+              type="button"
+              onClick={() => copyText(bookmarklet, "Bookmark address copied. Add it from the bookmarks bar.")}
+            >
+              Copy bookmark address
+            </button>
+            <button
+              className="button"
+              type="button"
+              onClick={() =>
+                copyText(
+                  facebookCaptureConsoleCommand(),
+                  "Console command copied. On the Facebook post, open the console, paste it, and press Enter."
+                )
+              }
+            >
+              Copy console command
+            </button>
+          </div>
+          {copyNote ? <div className="muted small">{copyNote}</div> : null}
+          <textarea
+            className="thread-address"
+            readOnly
+            aria-label="Capture thread bookmark address"
+            value={bookmarklet}
+          />
+          <div className="muted small">
+            You can also paste comment text copied from the post. Each post, comment, and reply becomes its own token.
+          </div>
+          <textarea
+            aria-label="Facebook thread"
+            placeholder="Paste the captured thread"
+            value={paste}
+            onChange={(event) => onPaste(event.target.value)}
+          />
+          {paste.trim() && parsed.error ? <div className="error">{parsed.error}</div> : null}
+          {summary ? <div className="muted small">{summary}</div> : null}
+          {parsed.items ? (
+            <div className="thread-preview">
+              {parsed.items.map((item, index) => (
+                <div key={`${item.author}-${index}`} className="thread-token">
+                  <div className="thread-role">{item.role}</div>
+                  <div>
+                    <strong>{item.author}</strong>
+                    <p>{item.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="modal-actions">
+          <button className="button" type="button" onClick={onReadClipboard}>
+            Read clipboard
+          </button>
+          <button className="button" type="button" onClick={onPlace} disabled={!parsed.items}>
+            Place tokens
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const hexRadius = 36;
+  const snapSize = 20;
+  const [snapRatio, setSnapRatio] = useState(0.94);
+  const [disconnectVelocityThreshold, setDisconnectVelocityThreshold] = useState(60);
+  const colorOptions = [
+    { name: "Red", color: "#f23f3f" },
+    { name: "Orange", color: "#f29926" },
+    { name: "Yellow", color: "#f2d933" },
+    { name: "Green", color: "#40d940" },
+    { name: "Blue", color: "#4099f2" }
+  ];
+  const desktop = isDesktop();
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [libraryPath, setLibraryPath] = useState("");
+  const [libraryNote, setLibraryNote] = useState("");
+
+  const [token, setTokenState] = useState(() => getToken());
+  const [user, setUser] = useState(null);
+  const [boards, setBoards] = useState([]);
+  const [activeBoardId, setActiveBoardId] = useState(null);
+  const [activeBoard, setActiveBoard] = useState(null);
+  const [activeBoardRole, setActiveBoardRole] = useState("owner");
+  const [activeBoardOwnerEmail, setActiveBoardOwnerEmail] = useState(null);
+  const [boardTitle, setBoardTitle] = useState("");
+  const [boardData, setBoardData] = useState({ hexagons: [] });
+  const [sharedView, setSharedView] = useState(false);
+  const [sharedRole, setSharedRole] = useState(null);
+  const [shareToken, setShareToken] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [dragState, setDragState] = useState(null);
+  const [marqueeStart, setMarqueeStart] = useState(null);
+  const [marqueeRect, setMarqueeRect] = useState(null);
+  const [showNumbers, setShowNumbers] = useState(true);
+  const zoomMin = 0.2;
+  const zoomMax = 6.25;
+  const zoomMid = (zoomMin + zoomMax) / 2;
+  const [zoom, setZoom] = useState(zoomMid);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [panState, setPanState] = useState(null);
+  const [contextMenu, setContextMenu] = useState(null);
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [addCount, setAddCount] = useState(1);
+  const [addColor, setAddColor] = useState(colorOptions[0].color);
+  const [lastSelectedId, setLastSelectedId] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showSharePanel, setShowSharePanel] = useState(false);
+  const [shareRole, setShareRole] = useState("view");
+  const [shares, setShares] = useState([]);
+  const [collaborators, setCollaborators] = useState([]);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteRole, setInviteRole] = useState("editor");
+  const [commentMode, setCommentMode] = useState(false);
+  const [commentAuthor, setCommentAuthor] = useState(() => {
+    return localStorage.getItem("contextboard_comment_author") || "";
+  });
+  const pendingViewportRef = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const historyRef = useRef([]);
+  const redoRef = useRef([]);
+  const canvasRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const videoInputRef = useRef(null);
+  const audioInputRef = useRef(null);
+  const pdfInputRef = useRef(null);
+  const fileInputRef = useRef(null);
+  const pendingMediaRef = useRef({ id: null, type: null });
+  const wsRef = useRef(null);
+  const wsSendTimer = useRef(null);
+  const lastSendRef = useRef(0);
+  const suppressBroadcastRef = useRef(false);
+  const clientId = useRef(crypto.randomUUID());
+  const [presence, setPresence] = useState({});
+  const [presenceList, setPresenceList] = useState([]);
+  const presenceTimer = useRef(null);
+  const longPressTimerRef = useRef(null);
+  const longPressStartRef = useRef(null);
+  const [modalHexId, setModalHexId] = useState(null);
+  const [showThreadImport, setShowThreadImport] = useState(false);
+  const [threadPaste, setThreadPaste] = useState("");
+  const threadBookmarklet = useMemo(() => facebookCaptureBookmarklet(), []);
+  const openThreadImport = () => {
+    setErr("");
+    setShowThreadImport(true);
+  };
+  useCaptureThreadButton(openThreadImport);
+  const [modalText, setModalText] = useState("");
+  const [modalTextLoading, setModalTextLoading] = useState(false);
+  const [deletedBoard, setDeletedBoard] = useState(null);
+  const deleteTimerRef = useRef(null);
+
+  const title = useMemo(() => (mode === "login" ? "Sign in" : "Request access"), [mode]);
+
+  useEffect(() => {
+    if (!desktop) return undefined;
+    let canceled = false;
+    (async () => {
+      try {
+        const path = await desktopDataPath();
+        if (!canceled && path) setLibraryPath(path);
+        const session = await desktopSession();
+        if (canceled) return;
+        setToken(session.token);
+        setTokenState(session.token);
+        const currentUser = session.user || (await me());
+        if (!canceled) setUser(currentUser);
+      } catch (error) {
+        if (!canceled) setErr(error.message || "Unable to open the local library");
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [desktop]);
+
+  useEffect(() => {
+    if (desktop) return;
+    if (!token) {
+      setUser(null);
+      return;
+    }
+    let canceled = false;
+    (async () => {
+      try {
+        const u = await me();
+        if (!canceled) setUser(u);
+      } catch {
+        setToken(null);
+        setTokenState(null);
+        if (!canceled) setUser(null);
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [token]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const shareToken = params.get("share");
+    if (!shareToken) return;
+    let canceled = false;
+    setBusy(true);
+    getSharedBoard(shareToken)
+      .then((response) => {
+        if (canceled) return;
+        setSharedView(true);
+        setSharedRole(response.role || "view");
+        setShareToken(shareToken);
+        setActiveBoardId(response.board.id);
+        setBoardTitle(response.board.title || "Shared board");
+        const data = response.board.data || { hexagons: [] };
+        setBoardData(data);
+        applyViewportFromData(data);
+        setActiveBoardRole("viewer");
+        setActiveBoardOwnerEmail(null);
+        pendingViewportRef.current = true;
+      })
+      .catch((e) => {
+        if (!canceled) setErr(e.message);
+      })
+      .finally(() => {
+        if (!canceled) setBusy(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    listBoards()
+      .then((response) => setBoards(response.boards || []))
+      .catch((e) => setErr(e.message));
+  }, [user]);
+
+  useEffect(() => {
+    if (!activeBoardId || !token) return;
+    const apiBase = getApiBase();
+    const wsBase = import.meta.env.VITE_WS_BASE || apiBase.replace(/^http/, "ws");
+    const wsUrl = `${wsBase}/ws?boardId=${activeBoardId}&token=${token}`;
+    const socket = new WebSocket(wsUrl);
+    wsRef.current = socket;
+    socket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === "board_update") {
+          if (message.sender === clientId.current) return;
+          suppressBroadcastRef.current = true;
+          setBoardData(message.data);
+          return;
+        }
+        if (message.type === "presence") {
+          if (message.sender === clientId.current) return;
+          setPresence((prev) => ({
+            ...prev,
+            [message.sender]: { cursor: message.cursor, label: message.label }
+          }));
+        }
+        if (message.type === "presence_state") {
+          setPresenceList(message.users || []);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    return () => {
+      socket.close();
+      wsRef.current = null;
+    };
+  }, [activeBoardId, token]);
+
+  function queueBoardBroadcast(nextData) {
+    if (!canEdit) return;
+    if (!activeBoardId) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    const elapsed = now - lastSendRef.current;
+    const sendNow = elapsed >= 90;
+
+    const send = () => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      wsRef.current.send(
+        JSON.stringify({
+          type: "board_update",
+          boardId: activeBoardId,
+          data: nextData,
+          sender: clientId.current
+        })
+      );
+      lastSendRef.current = Date.now();
+    };
+
+    if (sendNow) {
+      send();
+      return;
+    }
+
+    if (wsSendTimer.current) {
+      clearTimeout(wsSendTimer.current);
+    }
+    wsSendTimer.current = window.setTimeout(() => {
+      send();
+    }, 90 - elapsed);
+  }
+
+  useEffect(() => {
+    if (suppressBroadcastRef.current) {
+      suppressBroadcastRef.current = false;
+      return;
+    }
+    queueBoardBroadcast(boardData);
+  }, [boardData, activeBoardId]);
+
+  function sendPresence(point) {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    if (presenceTimer.current) {
+      clearTimeout(presenceTimer.current);
+    }
+    presenceTimer.current = window.setTimeout(() => {
+      wsRef.current?.send(
+        JSON.stringify({
+          type: "presence",
+          boardId: activeBoardId,
+          cursor: point,
+          sender: clientId.current,
+          label: user?.email ? user.email.split("@")[0] : "Guest"
+        })
+      );
+    }, 60);
+  }
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const stored = localStorage.getItem(`contextboard_breakSpeed_${user.id}`);
+    if (stored !== null) {
+      const value = Number(stored);
+      if (!Number.isNaN(value)) {
+        setDisconnectVelocityThreshold(value);
+      }
+    }
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    localStorage.setItem(
+      `contextboard_breakSpeed_${user.id}`,
+      String(disconnectVelocityThreshold)
+    );
+  }, [disconnectVelocityThreshold, user?.id]);
+
+  useEffect(() => {
+    localStorage.setItem("contextboard_comment_author", commentAuthor);
+  }, [commentAuthor]);
+
+  useEffect(() => {
+    return () => {
+      if (deleteTimerRef.current) {
+        clearTimeout(deleteTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleKey(event) {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+        setModalHexId(null);
+      }
+    }
+    function handleClick() {
+      setContextMenu(null);
+    }
+    window.addEventListener("keydown", handleKey);
+    window.addEventListener("click", handleClick);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("click", handleClick);
+    };
+  }, []);
+
+  function cancelLongPress() {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressStartRef.current = null;
+  }
+
+  function openContextMenuAt(point, hexId) {
+    if (!canEdit) return;
+    setSelectedIds(new Set([hexId]));
+    setContextMenu({ x: point.x, y: point.y, targetId: hexId });
+  }
+
+  function startLongPress(event, hexId) {
+    if (!canEdit) return;
+    if (event.pointerType !== "touch") return;
+    cancelLongPress();
+    const start = { x: event.clientX, y: event.clientY };
+    longPressStartRef.current = { ...start, id: hexId };
+    longPressTimerRef.current = window.setTimeout(() => {
+      openContextMenuAt(start, hexId);
+      longPressTimerRef.current = null;
+    }, 450);
+  }
+
+  useEffect(() => {
+    if (!activeBoardId) return;
+    if (pendingViewportRef.current && applyViewportFromData(boardData)) {
+      pendingViewportRef.current = false;
+      return;
+    }
+    if (boardData?.viewport?.center && typeof boardData.viewport.zoom === "number") return;
+    const svg = canvasRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    setZoom(zoomMid);
+    setPan({ x: rect.width / 2, y: rect.height / 2 });
+  }, [activeBoardId, boardData?.viewport]);
+
+  useEffect(() => {
+    const hex = modalHexId
+      ? (boardData.hexagons || []).find((item) => item.id === modalHexId)
+      : null;
+    if (!hex || hex.content?.type !== "textfile" || !hex.content?.url) {
+      setModalText("");
+      setModalTextLoading(false);
+      return;
+    }
+    let canceled = false;
+    setModalTextLoading(true);
+    fetch(hex.content.url)
+      .then((response) => response.text())
+      .then((text) => {
+        if (!canceled) setModalText(text);
+      })
+      .catch(() => {
+        if (!canceled) setModalText("Unable to preview this file.");
+      })
+      .finally(() => {
+        if (!canceled) setModalTextLoading(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [modalHexId, boardData.hexagons]);
+
+  const canEdit = !sharedView && (activeBoardRole === "owner" || activeBoardRole === "editor");
+  const canComment = sharedView && sharedRole === "comment";
+  const isReadOnly = !canEdit;
+  const isOwner = activeBoardRole === "owner";
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setErr("");
+    setBusy(true);
+    try {
+      const fn = mode === "login" ? login : register;
+      const { token: t } = await fn(email.trim(), password);
+      setToken(t);
+      setTokenState(t);
+      const u = await me();
+      setUser(u);
+    } catch (e2) {
+      setErr(e2?.message || "Something went wrong");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function logout() {
+    setToken(null);
+    setTokenState(null);
+    setUser(null);
+    setBoards([]);
+    setActiveBoardId(null);
+    setActiveBoard(null);
+    setActiveBoardRole("owner");
+    setActiveBoardOwnerEmail(null);
+    setEmail("");
+    setPassword("");
+    setErr("");
+    setDeletedBoard(null);
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
+  }
+
+  function exitSharedView() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("share");
+    window.history.replaceState({}, "", url.toString());
+    setSharedView(false);
+    setSharedRole(null);
+    setShareToken(null);
+    setCommentMode(false);
+    setActiveBoardId(null);
+    setBoardTitle("");
+    setBoardData({ hexagons: [] });
+    setShowSharePanel(false);
+    setErr("");
+  }
+
+  function handleStartThreadCapture() {
+    setErr("");
+    setShowThreadImport(true);
+    const editable = boards.find(
+      (board) => !board.accessRole || board.accessRole === "owner" || board.accessRole === "editor"
+    );
+    if (editable) {
+      openBoard(editable.id);
+      return;
+    }
+    handleCreateBoard();
+  }
+
+  async function handleCreateBoard() {
+    setErr("");
+    try {
+      const payload = { title: "Untitled Board", data: { hexagons: [], connections: [], viewport: {} } };
+      const response = await createBoard(payload);
+      const nextBoard = response.board;
+      setBoards((prev) => [nextBoard, ...prev]);
+      openBoard(nextBoard.id);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function openBoard(id) {
+    setErr("");
+    setActiveBoardId(id);
+    setSharedView(false);
+    setSharedRole(null);
+    setShowSharePanel(false);
+    try {
+      const response = await getBoard(id);
+      const board = response.board;
+      setActiveBoard(board);
+      setBoardTitle(board.title || "");
+      setActiveBoardRole(board.accessRole || "owner");
+      setActiveBoardOwnerEmail(board.ownerEmail || null);
+      const data = board.data ?? { hexagons: [] };
+      setBoardData(data);
+      setSelectedIds(new Set());
+      setLastSelectedId(null);
+      if (!applyViewportFromData(data)) {
+        const svg = canvasRef.current;
+        if (svg) {
+          const rect = svg.getBoundingClientRect();
+          setZoom(zoomMid);
+          setPan({ x: rect.width / 2, y: rect.height / 2 });
+        } else {
+          setZoom(zoomMid);
+          setPan({ x: 0, y: 0 });
+        }
+      }
+      pendingViewportRef.current = true;
+      historyRef.current = [];
+      redoRef.current = [];
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  function applyViewportFromData(data) {
+    const viewport = data?.viewport;
+    if (!viewport || typeof viewport.zoom !== "number") return false;
+    const svg = canvasRef.current;
+    if (!svg) return false;
+    const rect = svg.getBoundingClientRect();
+    const zoomValue = zoomMid;
+    if (viewport.center && typeof viewport.center.x === "number" && typeof viewport.center.y === "number") {
+      setZoom(zoomValue);
+      setPan({
+        x: rect.width / 2 - viewport.center.x * zoomValue,
+        y: rect.height / 2 - viewport.center.y * zoomValue
+      });
+      return true;
+    }
+    if (viewport.pan && typeof viewport.pan.x === "number" && typeof viewport.pan.y === "number") {
+      setZoom(zoomValue);
+      setPan({ x: viewport.pan.x, y: viewport.pan.y });
+      return true;
+    }
+    return false;
+  }
+
+  function buildViewportForSave() {
+    const svg = canvasRef.current;
+    if (!svg) {
+      return { pan: { ...pan }, zoom };
+    }
+    const rect = svg.getBoundingClientRect();
+    const centerWorld = {
+      x: (rect.width / 2 - pan.x) / zoom,
+      y: (rect.height / 2 - pan.y) / zoom
+    };
+    return { center: centerWorld, pan: { ...pan }, zoom };
+  }
+
+  function pushHistory(nextData) {
+    historyRef.current = [...historyRef.current, JSON.stringify(boardData)].slice(-20);
+    redoRef.current = [];
+    setBoardData(nextData);
+  }
+
+  function undo() {
+    const prev = historyRef.current.pop();
+    if (!prev) return;
+    redoRef.current = [...redoRef.current, JSON.stringify(boardData)].slice(-20);
+    setBoardData(JSON.parse(prev));
+  }
+
+  function redo() {
+    const next = redoRef.current.pop();
+    if (!next) return;
+    historyRef.current = [...historyRef.current, JSON.stringify(boardData)].slice(-20);
+    setBoardData(JSON.parse(next));
+  }
+
+  async function handleSaveBoard() {
+    if (!canEdit) return;
+    if (!activeBoardId) return;
+    setErr("");
+    try {
+      const response = await updateBoard(activeBoardId, {
+        title: boardTitle.trim() || "Untitled Board",
+        data: {
+          ...boardData,
+          viewport: buildViewportForSave()
+        }
+      });
+      setActiveBoard(response.board);
+      setBoards((prev) =>
+        prev.map((item) =>
+          item.id === response.board.id
+            ? {
+                ...item,
+                ...response.board,
+                accessRole: item.accessRole,
+                ownerEmail: item.ownerEmail
+              }
+            : item
+        )
+      );
+    } catch (e) {
+      setErr(e.message || "Failed to save board");
+    }
+  }
+
+  async function addCommentAt(point) {
+    if (!canComment || !shareToken) return;
+    const text = window.prompt("Add a comment");
+    if (!text) return;
+    const payload = {
+      text,
+      x: point.x,
+      y: point.y,
+      author: commentAuthor || "Guest"
+    };
+    setErr("");
+    try {
+      const response = await addShareComment(shareToken, payload);
+      if (response?.data) {
+        setBoardData(response.data);
+      } else {
+        setBoardData((prev) => ({
+          ...prev,
+          comments: [...(prev.comments || []), response.comment]
+        }));
+      }
+    } catch (e) {
+      setErr(e.message || "Failed to add comment");
+    } finally {
+      setCommentMode(false);
+    }
+  }
+
+  async function refreshSharing() {
+    if (!activeBoardId || !isOwner) return;
+    try {
+      const [sharesResponse, collaboratorsResponse] = await Promise.all([
+        listShares(activeBoardId),
+        listCollaborators(activeBoardId)
+      ]);
+      setShares(sharesResponse.shares || []);
+      setCollaborators(collaboratorsResponse.collaborators || []);
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  useEffect(() => {
+    if (!showSharePanel) return;
+    refreshSharing();
+  }, [showSharePanel, activeBoardId, isOwner]);
+
+  async function handleCreateShare() {
+    if (!activeBoardId || !isOwner) return;
+    setErr("");
+    try {
+      await createShare(activeBoardId, shareRole);
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function handleDeleteShare(shareId) {
+    if (!activeBoardId || !isOwner) return;
+    setErr("");
+    try {
+      await deleteShare(activeBoardId, shareId);
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function handleAddCollaborator() {
+    if (!activeBoardId || !isOwner) return;
+    const emailValue = inviteEmail.trim();
+    if (!emailValue) return;
+    setErr("");
+    try {
+      await addCollaborator(activeBoardId, { email: emailValue, role: inviteRole });
+      setInviteEmail("");
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  async function handleRemoveCollaborator(collaboratorId) {
+    if (!activeBoardId || !isOwner) return;
+    setErr("");
+    try {
+      await removeCollaborator(activeBoardId, collaboratorId);
+      await refreshSharing();
+    } catch (e) {
+      setErr(e.message);
+    }
+  }
+
+  function buildShareUrl(token) {
+    return `${window.location.origin}/?share=${token}`;
+  }
+
+  async function handleCopyShare(token) {
+    try {
+      await navigator.clipboard.writeText(buildShareUrl(token));
+    } catch {
+      setErr("Unable to copy share link.");
+    }
+  }
+
+  function handleCanvasPointerMove(event) {
+    if (!dragState) return;
+    if (longPressStartRef.current) {
+      const dx = event.clientX - longPressStartRef.current.x;
+      const dy = event.clientY - longPressStartRef.current.y;
+      if (Math.hypot(dx, dy) > 8) {
+        cancelLongPress();
+      }
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const rawX = (event.clientX - rect.left - pan.x) / zoom;
+    const rawY = (event.clientY - rect.top - pan.y) / zoom;
+    const x = rawX;
+    const y = rawY;
+    const dx = x - dragState.startX;
+    const dy = y - dragState.startY;
+    const now = event.timeStamp || Date.now();
+    const deltaTime = Math.max(1, now - dragState.lastTime);
+    const speed = Math.hypot(x - dragState.lastX, y - dragState.lastY) / deltaTime;
+
+    if (!dragState.breakConnections && now - dragState.startTime < 200) {
+      const velocity = speed * 1000;
+      if (velocity > disconnectVelocityThreshold) {
+        const nextHexagons = clearConnectionsFor(boardData.hexagons || [], dragState.id);
+        setBoardData({ ...boardData, hexagons: nextHexagons });
+        setDragState({
+          ...dragState,
+          startPositions: { [dragState.id]: { x, y } },
+          startX: x,
+          startY: y,
+          lastX: x,
+          lastY: y,
+          lastTime: now,
+          lastSpeed: speed,
+          breakConnections: true
+        });
+        return;
+      }
+    }
+    setBoardData((prev) => ({
+      ...prev,
+      hexagons: (prev.hexagons || []).map((hex) =>
+        dragState.startPositions[hex.id]
+          ? {
+              ...hex,
+              x: dragState.startPositions[hex.id].x + dx,
+              y: dragState.startPositions[hex.id].y + dy
+            }
+          : hex
+      )
+    }));
+    setDragState((prev) =>
+      prev
+        ? {
+            ...prev,
+            lastX: x,
+            lastY: y,
+            lastTime: now,
+            lastSpeed: speed
+          }
+        : prev
+    );
+  }
+
+  function handleCanvasPointerUp() {
+    cancelLongPress();
+    if (dragState && canEdit) {
+      const hexSize = hexRadius * 2;
+      const snapDistance = hexSize * snapRatio;
+      const snapDistanceSquared = snapDistance * snapDistance;
+      let nextHexagons = boardData.hexagons || [];
+
+      if (!dragState.breakConnections) {
+        nextHexagons = snapHexagonToNeighbors(
+          nextHexagons,
+          dragState.id,
+          snapDistance,
+          snapDistanceSquared
+        );
+      }
+      pushHistory({ ...boardData, hexagons: nextHexagons });
+    }
+    if (panState) {
+      setPanState(null);
+    }
+    setDragState(null);
+    setMarqueeStart(null);
+    setMarqueeRect(null);
+  }
+
+  function handlePlaceThread() {
+    if (!canEdit) return;
+    const parsed = parseFacebookThread(threadPaste);
+    if (parsed.error) {
+      setErr(parsed.error);
+      return;
+    }
+    const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
+    const svg = canvasRef.current;
+    const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+    const worldX = (rect.width / 2 - pan.x) / zoom;
+    const worldY = (rect.height / 2 - pan.y) / zoom;
+    const created = threadToHexagons(parsed.items, {
+      originX: worldX,
+      originY: worldY - ((parsed.items.length - 1) * (hexRadius * 2 + 18)) / 2,
+      startNumber: maxNumber + 1,
+      hexRadius,
+      snapSize,
+      url: parsed.url
+    });
+    pushHistory({
+      ...boardData,
+      hexagons: [...(boardData.hexagons || []), ...created]
+    });
+    setSelectedIds(new Set(created.map((hex) => hex.id)));
+    setShowThreadImport(false);
+    setThreadPaste("");
+    setErr("");
+  }
+
+  async function handleReadThreadClipboard() {
+    try {
+      const text = await navigator.clipboard.readText();
+      setThreadPaste(text || "");
+      setErr("");
+    } catch {
+      setErr("Clipboard access was blocked. Paste the thread into the box.");
+    }
+  }
+
+  function handleAddHexagon(count = addCount, color = addColor) {
+    if (!canEdit) return;
+    const maxNumber = Math.max(0, ...(boardData.hexagons || []).map((hex) => hex.number || 0));
+    const svg = canvasRef.current;
+    const rect = svg ? svg.getBoundingClientRect() : { width: 0, height: 0 };
+    const center = { x: rect.width / 2, y: rect.height / 2 };
+    const worldX = (center.x - pan.x) / zoom;
+    const worldY = (center.y - pan.y) / zoom;
+    const hexagons = [...(boardData.hexagons || [])];
+    const cols = Math.ceil(Math.sqrt(count));
+    const spacing = hexRadius * 2.2;
+    for (let i = 0; i < count; i += 1) {
+      const row = Math.floor(i / cols);
+      const col = i % cols;
+      hexagons.push({
+        id: crypto.randomUUID(),
+        number: maxNumber + 1 + i,
+        x: Math.round((worldX + col * spacing) / snapSize) * snapSize,
+        y: Math.round((worldY + row * spacing) / snapSize) * snapSize,
+        text: "New",
+        fillColor: color,
+        connections: [],
+        content: null
+      });
+    }
+    pushHistory({ ...boardData, hexagons });
+    setSelectedIds(new Set(hexagons.slice(-count).map((hex) => hex.id)));
+    setShowAddMenu(false);
+  }
+
+  function handleLabelChange(value) {
+    if (!canEdit) return;
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || []).map((hex) =>
+        selectedIds.has(hex.id) ? { ...hex, text: value } : hex
+      )
+    });
+  }
+
+  function handleColorChange(value) {
+    if (!canEdit) return;
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || []).map((hex) =>
+        selectedIds.has(hex.id) ? { ...hex, fillColor: value } : hex
+      )
+    });
+  }
+
+  function handleMediaChange(file, forcedType) {
+    if (!canEdit) return;
+    if (!file) return;
+    const targetId = pendingMediaRef.current.id || Array.from(selectedIds)[0];
+    if (!targetId) return;
+    (async () => {
+      try {
+        const lowerName = file.name.toLowerCase();
+        const isTextFile =
+          file.type.startsWith("text/") ||
+          file.type === "application/json" ||
+          lowerName.endsWith(".md") ||
+          lowerName.endsWith(".txt") ||
+          lowerName.endsWith(".csv");
+        const type = forcedType && forcedType !== "file"
+          ? forcedType
+          : file.type.startsWith("image/")
+          ? "image"
+          : file.type.startsWith("video/")
+          ? "video"
+          : file.type.startsWith("audio/")
+          ? "audio"
+          : file.type === "application/pdf"
+          ? "pdf"
+          : isTextFile
+          ? "textfile"
+          : "file";
+        const contentType = file.type || "application/octet-stream";
+        const upload = await createUpload({ filename: file.name, contentType });
+        if (!upload?.uploadUrl || !upload?.publicUrl) {
+          throw new Error("Upload is not configured");
+        }
+        const putResponse = await fetch(upload.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": contentType },
+          body: file
+        });
+        if (!putResponse.ok) {
+          throw new Error("Failed to upload media");
+        }
+        const payload = { type, url: upload.publicUrl, name: file.name, contentType };
+        pushHistory({
+          ...boardData,
+          hexagons: (boardData.hexagons || []).map((hex) =>
+            hex.id === targetId
+              ? {
+                  ...hex,
+                  content: payload,
+                  text: hex.text === "New" ? "" : hex.text
+                }
+              : hex
+          )
+        });
+      } catch (e) {
+        setErr(e.message || "Failed to upload media");
+      } finally {
+        pendingMediaRef.current = { id: null, type: null };
+      }
+    })();
+  }
+
+  function handleHexPointerDown(event, hexId) {
+    if (isReadOnly) {
+      setSelectedIds(new Set([hexId]));
+      setLastSelectedId(hexId);
+      return;
+    }
+    if (event.pointerType === "touch" && !event.isPrimary) {
+      event.preventDefault();
+      cancelLongPress();
+      openContextMenuAt({ x: event.clientX, y: event.clientY }, hexId);
+      return;
+    }
+    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+    const localX = rect ? (event.clientX - rect.left - pan.x) / zoom : event.clientX;
+    const localY = rect ? (event.clientY - rect.top - pan.y) / zoom : event.clientY;
+    const isToggle = event.shiftKey;
+    const currentSelection = (() => {
+      const next = new Set(selectedIds);
+      if (isToggle) {
+        if (next.has(hexId)) {
+          next.delete(hexId);
+        } else {
+          next.add(hexId);
+        }
+        return next;
+      }
+      return new Set([hexId]);
+    })();
+    setSelectedIds(currentSelection);
+    setLastSelectedId(hexId);
+    startLongPress(event, hexId);
+    const dragIds = (() => {
+      if (currentSelection.size > 1) return currentSelection;
+      const connected = new Set([hexId]);
+      const queue = [hexId];
+      while (queue.length) {
+        const current = queue.pop();
+        const node = (boardData.hexagons || []).find((hex) => hex.id === current);
+        (node?.connections || []).forEach((id) => {
+          if (!connected.has(id)) {
+            connected.add(id);
+            queue.push(id);
+          }
+        });
+      }
+      return connected;
+    })();
+    const startPositions = {};
+    (boardData.hexagons || []).forEach((hex) => {
+      if (dragIds.has(hex.id)) {
+        startPositions[hex.id] = { x: hex.x || 0, y: hex.y || 0 };
+      }
+    });
+    setDragState({
+      id: hexId,
+      startX: localX,
+      startY: localY,
+      startPositions,
+      lastX: localX,
+      lastY: localY,
+      lastTime: event.timeStamp || Date.now(),
+      lastSpeed: 0,
+      startTime: event.timeStamp || Date.now(),
+      breakConnections: false
+    });
+  }
+
+  function openContextMenu(event, hexId) {
+    if (!canEdit) return;
+    event.preventDefault();
+    openContextMenuAt({ x: event.clientX, y: event.clientY }, hexId);
+  }
+
+  function setHexContent(id, content) {
+    if (!canEdit) return;
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || []).map((hex) =>
+        hex.id === id ? { ...hex, content } : hex
+      )
+    });
+  }
+
+  function handleEditText(id, asHypertext) {
+    if (!canEdit) return;
+    const hex = (boardData.hexagons || []).find((item) => item.id === id);
+    const current =
+      hex?.content?.type === "text" || hex?.content?.type === "hypertext"
+        ? hex.content.value || ""
+        : hex?.text || "";
+    const label = asHypertext ? "Edit hypertext" : "Edit text";
+    const next = window.prompt(label, current);
+    if (next === null) return;
+    if (asHypertext) {
+      setHexContent(id, { type: "hypertext", value: next });
+    } else {
+      setHexContent(id, { type: "text", value: next });
+    }
+  }
+
+  function handleHexDoubleClick(event, hex) {
+    if (hex.content?.type === "hypertext" && typeof hex.content.value === "string") {
+      const match = hex.content.value.match(/https?:\/\/\S+/);
+      if (match) {
+        window.open(match[0], "_blank", "noopener,noreferrer");
+        return;
+      }
+    }
+    if (!event.target?.classList?.contains("hex-text-label")) {
+      return;
+    }
+    if (hex.content?.type === "video" || hex.content?.type === "audio") {
+      const media = document.getElementById(`media-${hex.id}`);
+      if (media && media.paused) {
+        media.play();
+      } else if (media) {
+        media.pause();
+      }
+      return;
+    }
+    if (!canEdit) return;
+    handleEditText(hex.id, hex.content?.type === "hypertext");
+  }
+
+  function handleSetText(id) {
+    setHexContent(id, { type: "text", value: "New Text" });
+  }
+
+  function handleSetHypertext(id) {
+    setHexContent(id, { type: "hypertext", value: "Visit https://openai.com" });
+  }
+
+  function getHyperlink(hex) {
+    if (hex?.content?.type !== "hypertext") return null;
+    if (typeof hex.content.value !== "string") return null;
+    const match = hex.content.value.match(/https?:\/\/\S+/);
+    return match ? match[0] : null;
+  }
+
+  function getOfficeViewerUrl(content) {
+    if (!content?.url || !content?.name) return null;
+    const ext = content.name.toLowerCase().split(".").pop();
+    const officeExtensions = new Set([
+      "doc",
+      "docx",
+      "ppt",
+      "pptx",
+      "xls",
+      "xlsx",
+      "xlsm",
+      "xlsb",
+      "odt",
+      "ods",
+      "odp"
+    ]);
+    if (!ext || !officeExtensions.has(ext)) return null;
+    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(content.url)}`;
+  }
+
+  function openHexModal(id) {
+    setModalHexId(id);
+    setContextMenu(null);
+  }
+
+  function triggerMediaPicker(id, type) {
+    pendingMediaRef.current = { id, type };
+    if (type === "image") imageInputRef.current?.click();
+    if (type === "video") videoInputRef.current?.click();
+    if (type === "audio") audioInputRef.current?.click();
+    if (type === "pdf") pdfInputRef.current?.click();
+    if (type === "file") fileInputRef.current?.click();
+  }
+
+  function getHexPoints(radius) {
+    const points = [];
+    for (let i = 0; i < 6; i += 1) {
+      const angle = ((60 * i - 30) * Math.PI) / 180;
+      points.push([radius * Math.cos(angle), radius * Math.sin(angle)].join(","));
+    }
+    return points.join(" ");
+  }
+
+  function buildConnections(hexagons) {
+    const seen = new Set();
+    const lines = [];
+    hexagons.forEach((hex) => {
+      (hex.connections || []).forEach((targetId) => {
+        const key = [hex.id, targetId].sort().join("-");
+        if (seen.has(key)) return;
+        const target = hexagons.find((other) => other.id === targetId);
+        if (!target) return;
+        seen.add(key);
+        lines.push({ from: hex, to: target, key });
+      });
+    });
+    return lines;
+  }
+
+  function clearConnectionsFor(hexagons, id) {
+    return hexagons.map((hex) => {
+      if (hex.id === id) {
+        return { ...hex, connections: [] };
+      }
+      if (hex.connections?.includes(id)) {
+        return { ...hex, connections: (hex.connections || []).filter((conn) => conn !== id) };
+      }
+      return hex;
+    });
+  }
+
+  function snapHexagonToNeighbors(hexagons, draggedId, snapDistance, snapDistanceSquared) {
+    const draggedIndex = hexagons.findIndex((hex) => hex.id === draggedId);
+    if (draggedIndex < 0) return hexagons;
+    const dragged = hexagons[draggedIndex];
+    let closestIndex = -1;
+    let closestDistSquared = Infinity;
+    hexagons.forEach((hex, index) => {
+      if (hex.id === draggedId) return;
+      const dx = (dragged.x || 0) - (hex.x || 0);
+      const dy = (dragged.y || 0) - (hex.y || 0);
+      const distSquared = dx * dx + dy * dy;
+      if (distSquared <= snapDistanceSquared && distSquared < closestDistSquared) {
+        closestDistSquared = distSquared;
+        closestIndex = index;
+      }
+    });
+    if (closestIndex < 0) return hexagons;
+    const closest = hexagons[closestIndex];
+    const dx = (dragged.x || 0) - (closest.x || 0);
+    const dy = (dragged.y || 0) - (closest.y || 0);
+    const angle = Math.atan2(dy, dx);
+    const newX = (closest.x || 0) + Math.cos(angle) * snapDistance;
+    const newY = (closest.y || 0) + Math.sin(angle) * snapDistance;
+    const updated = [...hexagons];
+    const draggedConnections = new Set(updated[draggedIndex].connections || []);
+    const closestConnections = new Set(updated[closestIndex].connections || []);
+    draggedConnections.add(closest.id);
+    closestConnections.add(dragged.id);
+    updated[draggedIndex] = {
+      ...updated[draggedIndex],
+      x: newX,
+      y: newY,
+      connections: Array.from(draggedConnections)
+    };
+    updated[closestIndex] = {
+      ...updated[closestIndex],
+      connections: Array.from(closestConnections)
+    };
+    return updated;
+  }
+
+  function handleCanvasPointerDown(event) {
+    if (event.target.tagName !== "svg" && event.target.tagName !== "rect") return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const start = {
+      x: (event.clientX - rect.left - pan.x) / zoom,
+      y: (event.clientY - rect.top - pan.y) / zoom
+    };
+    if (commentMode && canComment) {
+      addCommentAt(start);
+      return;
+    }
+    if (event.shiftKey) {
+      setMarqueeStart(start);
+      setMarqueeRect({ x: start.x, y: start.y, width: 0, height: 0 });
+      setSelectedIds(new Set());
+    } else {
+      setPanState({ startX: event.clientX, startY: event.clientY, origin: { ...pan } });
+    }
+  }
+
+  function handleCanvasPointerMoveMarquee(event) {
+    if (panState) {
+      setPan({
+        x: panState.origin.x + (event.clientX - panState.startX),
+        y: panState.origin.y + (event.clientY - panState.startY)
+      });
+      return;
+    }
+    if (!marqueeStart) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX - rect.left - pan.x) / zoom;
+    const y = (event.clientY - rect.top - pan.y) / zoom;
+    const nextRect = {
+      x: Math.min(marqueeStart.x, x),
+      y: Math.min(marqueeStart.y, y),
+      width: Math.abs(x - marqueeStart.x),
+      height: Math.abs(y - marqueeStart.y)
+    };
+    setMarqueeRect(nextRect);
+    const ids = (boardData.hexagons || [])
+      .filter((hex) => {
+        const hx = hex.x || 0;
+        const hy = hex.y || 0;
+        return (
+          hx >= nextRect.x &&
+          hx <= nextRect.x + nextRect.width &&
+          hy >= nextRect.y &&
+          hy <= nextRect.y + nextRect.height
+        );
+      })
+      .map((hex) => hex.id);
+    setSelectedIds(new Set(ids));
+  }
+
+  function findHexAtPoint(point) {
+    const hexagons = boardData.hexagons || [];
+    for (let i = hexagons.length - 1; i >= 0; i -= 1) {
+      const hex = hexagons[i];
+      const dx = point.x - (hex.x || 0);
+      const dy = point.y - (hex.y || 0);
+      if (Math.hypot(dx, dy) <= hexRadius) {
+        return hex;
+      }
+    }
+    return null;
+  }
+
+  function handleDropMedia(event) {
+    event.preventDefault();
+    if (!canEdit) return;
+    const file = event.dataTransfer?.files?.[0];
+    if (!file) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const point = {
+      x: (event.clientX - rect.left - pan.x) / zoom,
+      y: (event.clientY - rect.top - pan.y) / zoom
+    };
+    const targetHex = findHexAtPoint(point);
+    const targetId = targetHex?.id || Array.from(selectedIds)[0];
+    if (!targetId) {
+      setErr("Select a hexagon or drop directly onto one.");
+      return;
+    }
+    pendingMediaRef.current = { id: targetId, type: null };
+    handleMediaChange(file);
+  }
+
+  function handleDeleteSelected() {
+    if (!canEdit) return;
+    if (selectedIds.size === 0) return;
+    pushHistory({
+      ...boardData,
+      hexagons: (boardData.hexagons || [])
+        .filter((hex) => !selectedIds.has(hex.id))
+        .map((hex) => ({
+          ...hex,
+          connections: (hex.connections || []).filter((id) => !selectedIds.has(id))
+        }))
+    });
+    setSelectedIds(new Set());
+  }
+
+  function handleDisconnectSelected() {
+    if (!canEdit) return;
+    if (selectedIds.size === 0) return;
+    let next = boardData.hexagons || [];
+    selectedIds.forEach((id) => {
+      next = clearConnectionsFor(next, id);
+    });
+    pushHistory({ ...boardData, hexagons: next });
+  }
+
+  function setZoomWithCenter(nextZoom) {
+    const svg = canvasRef.current;
+    if (!svg) {
+      setZoom(nextZoom);
+      return;
+    }
+    const rect = svg.getBoundingClientRect();
+    const center = { x: rect.width / 2, y: rect.height / 2 };
+    const target = lastSelectedId
+      ? (boardData.hexagons || []).find((hex) => hex.id === lastSelectedId)
+      : null;
+    const worldX = target ? target.x || 0 : (center.x - pan.x) / zoom;
+    const worldY = target ? target.y || 0 : (center.y - pan.y) / zoom;
+    setZoom(nextZoom);
+    setPan({
+      x: center.x - worldX * nextZoom,
+      y: center.y - worldY * nextZoom
+    });
+  }
+
+  function handleDuplicateSelected() {
+    if (!canEdit) return;
+    if (selectedIds.size === 0) return;
+    const selected = (boardData.hexagons || []).filter((hex) => selectedIds.has(hex.id));
+    const clones = selected.map((hex) => ({
+      ...hex,
+      id: crypto.randomUUID(),
+      x: (hex.x || 0) + 40,
+      y: (hex.y || 0) + 40,
+      connections: []
+    }));
+    pushHistory({
+      ...boardData,
+      hexagons: [...(boardData.hexagons || []), ...clones]
+    });
+    setSelectedIds(new Set(clones.map((hex) => hex.id)));
+  }
+
+  async function handleDeleteBoard(id) {
+    setErr("");
+    const target = boards.find((board) => board.id === id);
+    if (!target) return;
+    setBoards((prev) => prev.filter((board) => board.id !== id));
+    setDeletedBoard(target);
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+    }
+    deleteTimerRef.current = window.setTimeout(async () => {
+      try {
+        await deleteBoard(id);
+      } catch (e) {
+        setErr(e.message);
+        setBoards((prev) => [target, ...prev]);
+      } finally {
+        setDeletedBoard(null);
+        deleteTimerRef.current = null;
+      }
+    }, 5000);
+  }
+
+  function handleUndoDelete() {
+    if (!deletedBoard) return;
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
+    setBoards((prev) => [deletedBoard, ...prev]);
+    setDeletedBoard(null);
+  }
+
+  if (activeBoardId && (user || sharedView)) {
+    const selected = (boardData.hexagons || []).find((hex) => selectedIds.has(hex.id));
+    const connections = buildConnections(boardData.hexagons || []);
+    const modalHex = modalHexId
+      ? (boardData.hexagons || []).find((hex) => hex.id === modalHexId)
+      : null;
+    const modalLink = modalHex ? getHyperlink(modalHex) : null;
+    const modalTitle =
+      modalHex?.text ||
+      modalHex?.content?.name ||
+      (modalHex?.content?.type ? modalHex.content.type.toUpperCase() : "Hexagon");
+    const modalUrl = modalHex?.content?.url;
+    const modalOfficeUrl =
+      modalHex?.content?.type === "file" ? getOfficeViewerUrl(modalHex.content) : null;
+    const hexLabelMap = {
+      video: "VIDEO",
+      audio: "AUDIO",
+      pdf: "PDF",
+      file: "FILE",
+      textfile: "TEXT"
+    };
+    return (
+      <div className="board-shell">
+        <div className="board-topbar">
+          <Button onClick={() => (sharedView ? exitSharedView() : setActiveBoardId(null))}>
+            Back
+          </Button>
+          <div className="board-title">
+            <input
+              className="title-input"
+              value={boardTitle}
+              onChange={(e) => setBoardTitle(e.target.value)}
+              readOnly={isReadOnly}
+            />
+          </div>
+          {activeBoardRole !== "owner" ? (
+            <span className="role-badge">
+              {sharedView ? `Shared (${sharedRole || "view"})` : `${activeBoardRole} access`}
+            </span>
+          ) : null}
+          <div className="spacer" />
+          <button
+            className="icon-button"
+            onClick={() => selected && openHexModal(selected.id)}
+            disabled={!selected}
+            aria-label="Open"
+          >
+            🗔
+          </button>
+          {canEdit ? (
+            <>
+              <button
+                className="icon-button thread-button"
+                onClick={() => {
+                  setErr("");
+                  setShowThreadImport(true);
+                }}
+                aria-label="Capture thread"
+              >
+                Capture thread
+              </button>
+              <button className="icon-button" onClick={handleSaveBoard} aria-label="Save">
+                💾
+              </button>
+              <button
+                className="icon-button"
+                onClick={undo}
+                disabled={historyRef.current.length === 0}
+                aria-label="Undo"
+              >
+                ↺
+              </button>
+              <button
+                className="icon-button"
+                onClick={redo}
+                disabled={redoRef.current.length === 0}
+                aria-label="Redo"
+              >
+                ↻
+              </button>
+            </>
+          ) : (
+            <span className="role-badge">Read only</span>
+          )}
+          {canComment ? (
+            <>
+              <input
+                className="comment-name-input"
+                placeholder="Your name"
+                value={commentAuthor}
+                onChange={(e) => setCommentAuthor(e.target.value)}
+              />
+              <button
+                className={`icon-button ${commentMode ? "comment-active" : ""}`}
+                onClick={() => setCommentMode((prev) => !prev)}
+                aria-label="Add comment"
+              >
+                💬
+              </button>
+            </>
+          ) : null}
+          {!desktop && presenceList.length ? (
+            <div className="presence-list">
+              Online: {presenceList.map((item) => item.label).join(", ")}
+            </div>
+          ) : null}
+          {err ? <span className="board-error">{err}</span> : null}
+          {isOwner && !sharedView && !desktop ? (
+            <button
+              className="icon-button"
+              onClick={() => setShowSharePanel((prev) => !prev)}
+              aria-label="Share"
+            >
+              🔗
+            </button>
+          ) : null}
+          <button className="icon-button" onClick={() => setShowSettings((prev) => !prev)}>
+            ⚙️
+          </button>
+          {user && !desktop ? <Button onClick={logout}>Log out</Button> : null}
+        </div>
+        <div className="zoom-rail">
+          <input
+            className="zoom-slider"
+            type="range"
+            min={zoomMin}
+            max={zoomMax}
+            step="0.05"
+            value={zoom}
+            onChange={(e) => setZoomWithCenter(Number(e.target.value))}
+          />
+        </div>
+        {showSettings ? (
+          <div className="settings-panel">
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={showNumbers}
+                onChange={(e) => setShowNumbers(e.target.checked)}
+              />
+              Show numbers
+            </label>
+            <label className="field inline-field">
+              <div className="field-label">Snap ratio</div>
+              <input
+                type="number"
+                min="0.2"
+                max="1.2"
+                step="0.01"
+                value={snapRatio}
+                onChange={(e) => setSnapRatio(Number(e.target.value))}
+              />
+            </label>
+            <label className="field inline-field">
+              <div className="field-label">Break speed (px/s)</div>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="1"
+                value={disconnectVelocityThreshold}
+                onChange={(e) => setDisconnectVelocityThreshold(Number(e.target.value))}
+              />
+            </label>
+            {desktop ? (
+              <div className="library-settings">
+                <div className="panel-title">This computer</div>
+                <div className="muted small">
+                  Boards stay in your local library. Backup the folder any time.
+                </div>
+                {libraryPath ? <div className="panel-item-link">{libraryPath}</div> : null}
+                <LibraryActions
+                  onNote={(note) => {
+                    setLibraryNote(note);
+                    setErr("");
+                  }}
+                  onError={setErr}
+                />
+                {libraryNote ? <div className="muted small">{libraryNote}</div> : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {showSharePanel && isOwner ? (
+          <div className="share-panel">
+            <div className="panel-section">
+              <div className="panel-title">Share link</div>
+              <div className="panel-row">
+                <select value={shareRole} onChange={(e) => setShareRole(e.target.value)}>
+                  <option value="view">View</option>
+                  <option value="comment">Comment</option>
+                </select>
+                <Button onClick={handleCreateShare}>Create</Button>
+              </div>
+              {shares.length === 0 ? (
+                <div className="muted small">No active share links.</div>
+              ) : (
+                <div className="panel-list">
+                  {shares.map((share) => (
+                    <div key={share.id} className="panel-item">
+                      <div className="panel-item-title">
+                        {share.role} link
+                      </div>
+                      <div className="panel-item-link">{buildShareUrl(share.token)}</div>
+                      <div className="panel-row">
+                        <Button onClick={() => handleCopyShare(share.token)}>Copy</Button>
+                        <button
+                          className="link-button"
+                          type="button"
+                          onClick={() => handleDeleteShare(share.id)}
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="panel-section">
+              <div className="panel-title">Invite collaborator</div>
+              <label className="field inline-field">
+                <div className="field-label">Email</div>
+                <input
+                  type="email"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  placeholder="name@example.com"
+                />
+              </label>
+              <div className="panel-row">
+                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}>
+                  <option value="editor">Editor</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+                <Button onClick={handleAddCollaborator}>Invite</Button>
+              </div>
+              {collaborators.length === 0 ? (
+                <div className="muted small">No collaborators yet.</div>
+              ) : (
+                <div className="panel-list">
+                  {collaborators.map((collab) => (
+                    <div key={collab.id} className="panel-row panel-item">
+                      <div>
+                        <div className="panel-item-title">{collab.email}</div>
+                        <div className="muted small">{collab.role}</div>
+                      </div>
+                      <button
+                        className="link-button"
+                        type="button"
+                        onClick={() => handleRemoveCollaborator(collab.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+        <div className="snap-indicator">
+          Snap {(snapRatio * 100).toFixed(0)}% · Break {disconnectVelocityThreshold} px/s
+        </div>
+        <svg
+          ref={canvasRef}
+          className="canvas"
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={(event) => {
+            handleCanvasPointerMove(event);
+            handleCanvasPointerMoveMarquee(event);
+            const rect = event.currentTarget.getBoundingClientRect();
+            const cursor = {
+              x: (event.clientX - rect.left - pan.x) / zoom,
+              y: (event.clientY - rect.top - pan.y) / zoom
+            };
+            sendPresence(cursor);
+          }}
+          onPointerUp={handleCanvasPointerUp}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={handleDropMedia}
+        >
+          <rect width="100%" height="100%" fill="#f1f5f9" />
+          <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+            {connections.map((line) => (
+              <line
+                key={line.key}
+                x1={line.from.x || 0}
+                y1={line.from.y || 0}
+                x2={line.to.x || 0}
+                y2={line.to.y || 0}
+                stroke="#475569"
+                strokeWidth="2"
+              />
+            ))}
+            {marqueeRect ? (
+              <rect
+                x={marqueeRect.x}
+                y={marqueeRect.y}
+                width={marqueeRect.width}
+                height={marqueeRect.height}
+                fill="rgba(59,130,246,0.15)"
+                stroke="#3b82f6"
+                strokeWidth="1"
+              />
+            ) : null}
+            {Object.entries(presence)
+              .filter(([, data]) => data.cursor && typeof data.cursor.x === "number")
+              .map(([id, data]) => (
+                <g key={id} transform={`translate(${data.cursor.x} ${data.cursor.y})`}>
+                  <circle r="6" fill="#38bdf8" />
+                  <text x="10" y="4" fontSize="10" fill="#0f172a">
+                    {data.label || "User"}
+                  </text>
+                </g>
+              ))}
+            {(boardData.comments || []).map((comment) => (
+              <g
+                key={comment.id}
+                transform={`translate(${comment.x || 0} ${comment.y || 0})`}
+                pointerEvents="none"
+              >
+                <rect
+                  x="0"
+                  y="0"
+                  width="140"
+                  height="48"
+                  rx="10"
+                  ry="10"
+                  fill="#fef3c7"
+                  stroke="#f59e0b"
+                />
+                <text x="10" y="18" fontSize="10" fill="#92400e">
+                  {comment.author || "Guest"}
+                </text>
+                <text x="10" y="34" fontSize="11" fill="#78350f">
+                  {comment.text || ""}
+                </text>
+              </g>
+            ))}
+            {(boardData.hexagons || []).map((hex) => {
+              const clipId = `clip-${hex.id}`;
+              const gradientId = `grad-${hex.id}`;
+              const mediaSrc = hex.content?.url || hex.content?.dataUrl;
+              return (
+              <g
+                key={hex.id}
+                transform={`translate(${hex.x || 0} ${hex.y || 0})`}
+                onPointerDown={(event) => handleHexPointerDown(event, hex.id)}
+                onContextMenu={(event) => openContextMenu(event, hex.id)}
+                onDoubleClick={(event) => handleHexDoubleClick(event, hex)}
+              >
+                <defs>
+                  <clipPath id={clipId}>
+                    <polygon points={getHexPoints(hexRadius)} />
+                  </clipPath>
+                  <radialGradient id={gradientId} cx="35%" cy="30%" r="70%">
+                    <stop offset="0%" stopColor="rgba(255,255,255,0.65)" />
+                    <stop offset="45%" stopColor="rgba(255,255,255,0.1)" />
+                    <stop offset="100%" stopColor="rgba(0,0,0,0.25)" />
+                  </radialGradient>
+                </defs>
+                <polygon
+                  points={getHexPoints(hexRadius)}
+                  fill={hex.fillColor || "#cbd5f5"}
+                  stroke={selectedIds.has(hex.id) ? "#0f172a" : "#94a3b8"}
+                  strokeWidth={selectedIds.has(hex.id) ? 2 : 1}
+                />
+                <polygon
+                  points={getHexPoints(hexRadius)}
+                  fill={`url(#${gradientId})`}
+                />
+                {hex.content?.type ? (
+                  <g clipPath={`url(#${clipId})`}>
+                    {hex.content.type === "image" && mediaSrc ? (
+                      <image
+                        href={mediaSrc}
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                        preserveAspectRatio="xMidYMid slice"
+                      />
+                    ) : null}
+                    {hex.content.type === "video" && mediaSrc ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <video
+                          id={`media-${hex.id}`}
+                          src={mediaSrc}
+                          controls
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      </foreignObject>
+                    ) : null}
+                    {hex.content.type === "audio" && mediaSrc ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <audio
+                          id={`media-${hex.id}`}
+                          src={mediaSrc}
+                          controls
+                          style={{ width: "100%" }}
+                        />
+                      </foreignObject>
+                    ) : null}
+                    {hex.content.type === "pdf" && mediaSrc ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <iframe
+                          title={hex.content.name || "PDF"}
+                          src={mediaSrc}
+                          style={{ width: "100%", height: "100%", border: "none" }}
+                        />
+                      </foreignObject>
+                    ) : null}
+                    {(hex.content.type === "text" || hex.content.type === "hypertext") &&
+                    hex.content.source !== "facebook" ? (
+                      <foreignObject
+                        x={-hexRadius}
+                        y={-hexRadius}
+                        width={hexRadius * 2}
+                        height={hexRadius * 2}
+                      >
+                        <div className="hex-text-content">
+                          {hex.content.value || ""}
+                        </div>
+                      </foreignObject>
+                    ) : null}
+                  </g>
+                ) : null}
+                {hex.content?.type ? (
+                  <g
+                    className="hex-more-button"
+                    onPointerDown={(event) => {
+                      event.stopPropagation();
+                      event.preventDefault();
+                    }}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openHexModal(hex.id);
+                    }}
+                    transform={`translate(${hexRadius - 10} ${-hexRadius + 10})`}
+                  >
+                    <circle r="10" />
+                    <text className="hex-more-dots" textAnchor="middle" dominantBaseline="middle">
+                      ⋯
+                    </text>
+                  </g>
+                ) : null}
+                {showNumbers && hex.number ? (
+                  <text x={-hexRadius + 6} y={-hexRadius + 12} fontSize="10" fill="#0f172a">
+                    {hex.number}
+                  </text>
+                ) : null}
+                <text
+                  className="hex-text-label"
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  fontSize="12"
+                  fill="#0f172a"
+                >
+                  {(hex.content?.type === "text" || hex.content?.type === "hypertext") &&
+                  hex.content?.source !== "facebook"
+                    ? ""
+                    : hex.content?.type && hex.content?.type !== "image" && hex.content?.source !== "facebook"
+                    ? hexLabelMap[hex.content.type] || hex.content.type.toUpperCase()
+                    : hex.text || "Hex"}
+                </text>
+              </g>
+            )})}
+          </g>
+        </svg>
+        {canEdit ? (
+          <button
+            className="fab"
+            onClick={() => setShowAddMenu((prev) => !prev)}
+            aria-label="Add hexagon"
+          >
+            +
+          </button>
+        ) : null}
+        {canEdit && showAddMenu ? (
+          <div className="add-menu">
+            <div className="menu-section">Pick a color</div>
+            <div className="color-row">
+              {colorOptions.map((option) => (
+                <button
+                  key={option.name}
+                  className={`color-dot ${addColor === option.color ? "active" : ""}`}
+                  style={{ background: option.color }}
+                  onClick={() => setAddColor(option.color)}
+                  aria-label={option.name}
+                />
+              ))}
+            </div>
+            <label className="field inline-field">
+              <div className="field-label">How many</div>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                step="1"
+                value={addCount}
+                onChange={(e) => setAddCount(Math.max(1, Number(e.target.value)))}
+              />
+            </label>
+            <Button onClick={() => handleAddHexagon(addCount, addColor)}>Add</Button>
+          </div>
+        ) : null}
+        {canEdit && contextMenu ? (
+          <div
+            className="context-menu"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+            onMouseLeave={() => setContextMenu(null)}
+          >
+            <button onClick={() => openHexModal(contextMenu.targetId)}>Open</button>
+            <button onClick={() => setSelectedIds((prev) => {
+              const next = new Set(prev);
+              next.delete(contextMenu.targetId);
+              return next;
+            })}>
+              Deselect
+            </button>
+            <button onClick={() => setSelectedIds(new Set())}>Deselect All</button>
+            <button onClick={() => handleEditText(contextMenu.targetId, false)}>Edit Text</button>
+            <button onClick={() => handleSetText(contextMenu.targetId)}>Set Text</button>
+            <button onClick={() => handleEditText(contextMenu.targetId, true)}>Set Hypertext</button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "image")}>
+              Set Image
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "video")}>
+              Set Video
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "audio")}>
+              Set Audio
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "pdf")}>
+              Set PDF
+            </button>
+            <button onClick={() => triggerMediaPicker(contextMenu.targetId, "file")}>
+              Set File
+            </button>
+            <div className="menu-section">
+              Change Color
+              <div className="color-row">
+                {colorOptions.map((option) => (
+                  <button
+                    key={option.name}
+                    className="color-dot"
+                    style={{ background: option.color }}
+                    onClick={() => handleColorChange(option.color)}
+                    aria-label={option.name}
+                  />
+                ))}
+              </div>
+            </div>
+            <button onClick={() => handleDisconnectSelected()}>Disconnect</button>
+            <button
+              onClick={() => {
+                handleDuplicateSelected();
+                setContextMenu(null);
+              }}
+            >
+              Duplicate
+            </button>
+            <button
+              onClick={() => {
+                handleDeleteSelected();
+                setContextMenu(null);
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        ) : null}
+        {canEdit ? (
+          <>
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "image")}
+            />
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept="video/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "video")}
+            />
+            <input
+              ref={audioInputRef}
+              type="file"
+              accept="audio/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "audio")}
+            />
+            <input
+              ref={pdfInputRef}
+              type="file"
+              accept="application/pdf"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "pdf")}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="*/*"
+              style={{ display: "none" }}
+              onChange={(e) => handleMediaChange(e.target.files?.[0], "file")}
+            />
+          </>
+        ) : null}
+        {showThreadImport ? (
+          <ThreadImportModal
+            paste={threadPaste}
+            bookmarklet={threadBookmarklet}
+            onPaste={setThreadPaste}
+            onReadClipboard={handleReadThreadClipboard}
+            onPlace={handlePlaceThread}
+            onClose={() => setShowThreadImport(false)}
+          />
+        ) : null}
+        {modalHex ? (
+          <div className="modal-overlay" onClick={() => setModalHexId(null)}>
+            <div className="modal-sheet" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <div className="modal-title">{modalTitle}</div>
+                <button className="icon-button" onClick={() => setModalHexId(null)} aria-label="Close">
+                  ✕
+                </button>
+              </div>
+              <div className="modal-body">
+                {modalHex.content?.type === "image" && modalUrl ? (
+                  <img className="modal-media" src={modalUrl} alt={modalHex.text || "Image"} />
+                ) : null}
+                {modalHex.content?.type === "video" && modalUrl ? (
+                  <video className="modal-media" src={modalUrl} controls />
+                ) : null}
+                {modalHex.content?.type === "audio" && modalUrl ? (
+                  <audio className="modal-media" src={modalUrl} controls />
+                ) : null}
+                {modalHex.content?.type === "pdf" && modalUrl ? (
+                  <iframe
+                    className="modal-media"
+                    title={modalHex.content.name || "PDF"}
+                    src={modalUrl}
+                  />
+                ) : null}
+                {modalHex.content?.type === "text" || modalHex.content?.type === "hypertext" ? (
+                  <div className="modal-text">{modalHex.content?.value || ""}</div>
+                ) : null}
+                {modalHex.content?.type === "textfile" ? (
+                  <pre className="modal-text">{modalTextLoading ? "Loading…" : modalText}</pre>
+                ) : null}
+                {!modalHex.content?.type ? (
+                  <div className="modal-text">{modalHex.text || ""}</div>
+                ) : null}
+                {modalHex.content?.type === "file" && (modalOfficeUrl || modalUrl) ? (
+                  <iframe
+                    className="modal-media"
+                    title={modalHex.content.name || "File"}
+                    src={modalOfficeUrl || modalUrl}
+                  />
+                ) : null}
+              </div>
+              <div className="modal-actions">
+                {modalUrl && (modalHex.content?.type === "file" || modalHex.content?.type === "textfile") ? (
+                  <a className="button" href={modalUrl} target="_blank" rel="noreferrer">
+                    Open file
+                  </a>
+                ) : null}
+                {modalLink ? (
+                  <a className="button" href={modalLink} target="_blank" rel="noreferrer">
+                    Open link
+                  </a>
+                ) : null}
+                <button className="button" onClick={() => setModalHexId(null)}>
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (user) {
+    return (
+      <div className="page">
+        {showThreadImport ? (
+          <ThreadImportModal
+            paste={threadPaste}
+            bookmarklet={threadBookmarklet}
+            onPaste={setThreadPaste}
+            onReadClipboard={handleReadThreadClipboard}
+            onPlace={handlePlaceThread}
+            onClose={() => setShowThreadImport(false)}
+          />
+        ) : null}
+        <div className="toolbar">
+          <h2>My Boards</h2>
+          <div className="spacer" />
+          {desktop ? null : <Button onClick={logout}>Log out</Button>}
+        </div>
+        <div className="card">
+          {desktop ? (
+            <>
+              <div className="muted">This library lives on this computer</div>
+              <div className="email">You own these boards. Nothing is stored in the cloud.</div>
+              {libraryPath ? <div className="muted small library-path">{libraryPath}</div> : null}
+              <LibraryActions
+                onNote={(note) => {
+                  setLibraryNote(note);
+                  setErr("");
+                }}
+                onError={setErr}
+              />
+              {libraryNote ? <div className="muted small">{libraryNote}</div> : null}
+            </>
+          ) : (
+            <>
+              <div className="muted">Signed in as</div>
+              <div className="email">{user.email}</div>
+            </>
+          )}
+        </div>
+        <div className="card thread-home">
+          <h3>Capture thread</h3>
+          <div className="muted">
+            Capture a Facebook post and place each comment on a board as its own token.
+          </div>
+          <Button onClick={handleStartThreadCapture}>Capture thread</Button>
+        </div>
+        <div className="toolbar">
+          <Button onClick={handleCreateBoard}>Create new board</Button>
+        </div>
+        {err ? <div className="error">{err}</div> : null}
+        <div className="list">
+          {boards.map((board) => (
+            <div key={board.id} className="list-item row">
+              <button className="list-action" onClick={() => openBoard(board.id)}>
+                <div className="list-title">{board.title}</div>
+                <div className="muted">
+                  Updated {board.updatedAt ? new Date(board.updatedAt).toLocaleString() : "—"}
+                </div>
+                {board.accessRole && board.accessRole !== "owner" ? (
+                  <div className="muted small">
+                    Shared by {board.ownerEmail || "Unknown"} · {board.accessRole}
+                  </div>
+                ) : null}
+              </button>
+              <button className="button" onClick={() => handleDeleteBoard(board.id)}>
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+        {deletedBoard ? (
+          <div className="undo-toast">
+            Board deleted.
+            <button className="link-button" type="button" onClick={handleUndoDelete}>
+              Undo
+            </button>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (desktop) {
+    return (
+      <div className="page">
+        <div className="card">
+          <h2>Opening your local library</h2>
+          <div className="muted">
+            Contextboard Desktop stores boards on this computer. No account and no hosted
+            database.
+          </div>
+          {err ? <div className="error">{err}</div> : <div className="muted">Starting…</div>}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      {showThreadImport ? (
+        <ThreadImportModal
+          paste={threadPaste}
+          bookmarklet={threadBookmarklet}
+          onPaste={setThreadPaste}
+          onReadClipboard={handleReadThreadClipboard}
+          onPlace={handlePlaceThread}
+          onClose={() => setShowThreadImport(false)}
+        />
+      ) : null}
+      <div className="card">
+        <h2>{title}</h2>
+        <div className="muted">
+          {mode === "register"
+            ? "Invite-only: your email must be on the allowlist."
+            : "Sign in to access your private boards."}
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <Field
+            label="Email"
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={busy}
+            required
+          />
+          <Field
+            label="Password"
+            type="password"
+            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            disabled={busy}
+            required
+          />
+
+          {err ? <div className="error">{err}</div> : null}
+
+          <div className="toolbar">
+            <Button type="submit" disabled={busy}>
+              {busy ? "Working…" : mode === "login" ? "Sign in" : "Register"}
+            </Button>
+            <button
+              type="button"
+              onClick={() => {
+                setErr("");
+                setMode(mode === "login" ? "register" : "login");
+              }}
+              className="link-button"
+              disabled={busy}
+            >
+              {mode === "login" ? "Need an invite?" : "Already invited? Sign in"}
+            </button>
+          </div>
+        </form>
+
+        <div className="muted small">
+          Tip: if you see “Not invited”, add your email to the API env var{" "}
+          <code>INVITE_ALLOWLIST</code> and redeploy.
+        </div>
+      </div>
+    </div>
+  );
+}

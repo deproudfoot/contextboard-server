@@ -19,6 +19,9 @@ yarn-error.log*
 node_modules/
 web/node_modules/
 api/node_modules/
+desktop/node_modules/
+desktop/dist/
+desktop/release/
 
 # macOS
 .DS_Store
