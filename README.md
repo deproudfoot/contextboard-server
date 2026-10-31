@@ -1,6 +1,8 @@
 ## Contextboard
 
-This repo contains a Node API in `api/` and a Vite React app in `web/`.
+This repo contains a hosted Node API in `api/`, a Vite React web app in `web/`, and a **separate native desktop app** in `desktop/`.
+
+The desktop app is local-first. Users install it, and their boards stay in a folder they own. It does not use the hosted API, Postgres, or object storage. See `desktop/README.md` to build Mac, Windows, and Linux installers.
 
 ### Render deploy
 
